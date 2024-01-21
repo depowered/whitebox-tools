@@ -14,11 +14,13 @@ use std::ops::{AddAssign, Index, IndexMut, SubAssign};
 /// Example:
 ///
 /// ```
+/// use whitebox_common::structures::Array2D;
+/// use whitebox_common::structures::NMaximizer;
 /// let rows = 100;
 /// let columns = 500;
 /// let initial_value = 0f64;
 /// let nodata_value = -999f64;
-/// let mut x: Array2D<f64> = Array2D::new(rows, columns, initial_value, nodata_value)?;
+/// let mut x: Array2D<f64> = Array2D::new(rows, columns, initial_value, nodata_value).unwrap();
 /// let cell_val = x.get_value(50, 100);
 /// x.set_value(50, 100, 1f64);
 /// ```
@@ -39,11 +41,13 @@ where
     /// Example:
     ///
     /// ```
+    /// use whitebox_common::structures::Array2D;
     /// let rows = 100;
     /// let columns = 500;
     /// let initial_value = 0f64;
     /// let nodata_value = -999f64;
-    /// let mut x: Array2D<f64> = Array2D::new(rows, columns, initial_value, nodata_value)?;
+    /// let mut x: Array2D<f64> = Array2D::new(rows, columns, initial_value,
+    /// nodata_value).unwrap();
     /// ```
     pub fn new(
         rows: isize,

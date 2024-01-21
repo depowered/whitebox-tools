@@ -1063,7 +1063,7 @@ impl Polyline {
     // Creates a new Polyline from vertices
     fn new(vertices: &[Point2D], id: usize) -> Self {
         Polyline {
-            vertices: vertices.clone().to_vec(),
+            vertices: vertices.to_vec(),
             id,
             split_points: vec![],
             splits_offset_by_one: false,

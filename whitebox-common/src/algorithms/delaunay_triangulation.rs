@@ -1,4 +1,4 @@
-/*!
+/*
 The following code has been modified from the original delaunator-rs project:
 
 https://github.com/mourner/delaunator-rs

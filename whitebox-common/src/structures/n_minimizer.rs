@@ -11,6 +11,7 @@ License: MIT
 /// efficient and small memory solution.
 ///
 /// ## Example
+///     use whitebox_common::structures::NMinimizer;
 ///     let mut lows = NMinimizer::new(4);
 ///
 ///     let data = vec![4.0, 3.0, -2.0, 9.0, 3.0, 2.0, 1.0, 8.0, 5.0];
@@ -194,6 +195,7 @@ mod test {
         );
     }
 
+    #[allow(dead_code)]
     #[derive(Clone, Copy, Debug)]
     struct CustomStruct<T> {
         value: T,

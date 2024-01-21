@@ -1,5 +1,6 @@
 [workspace]
 members = ["whitebox-common", "whitebox-lidar", "whitebox-plugins", "whitebox-raster", "whitebox-runner", "whitebox-tools-app", "whitebox-vector"]
+resolver = "2"
 
 [profile.release]
 incremental = true

@@ -31,6 +31,8 @@ struct FixedRadiusSearchEntry2D<T: Copy> {
 /// A simple 2D hash-based fixed radius search data structure.
 ///
 /// ## Example
+///     use whitebox_common::structures::FixedRadiusSearch2D;
+///     use whitebox_common::structures::DistanceMetric;
 ///     let mut frs = FixedRadiusSearch2D::new(5.0, DistanceMetric::SquaredEuclidean);
 ///     frs.insert(45.3, 32.5, 1i32);
 ///     frs.insert(25.3, 65.5, 2i32);
@@ -249,6 +251,8 @@ struct FixedRadiusSearchEntry3D<T: Copy> {
 /// A simple 3D hash-based fixed radius search data structure.
 ///
 /// ## Example
+///     use whitebox_common::structures::FixedRadiusSearch3D;
+///     use whitebox_common::structures::DistanceMetric;
 ///     let mut frs = FixedRadiusSearch3D::new(5.0, DistanceMetric::SquaredEuclidean);
 ///     frs.insert(45.3, 32.5, 6.1, 1i32);
 ///     frs.insert(25.3, 65.5, 21.5, 2i32);

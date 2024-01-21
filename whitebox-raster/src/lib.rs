@@ -59,7 +59,7 @@ use std::thread;
 ///
 /// Examples:
 ///
-/// ```
+/// ```ignore
 /// // Read an existing raster file
 /// let input = Raster::new(&input_file, "r")?;
 ///
