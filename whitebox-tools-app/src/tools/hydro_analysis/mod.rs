@@ -39,6 +39,7 @@ mod longest_flowpath;
 mod max_upslope_flowpath;
 mod mdinf_flow_accum;
 mod num_inflowing_neighbours;
+mod parallel_breach_depressions_least_cost;
 mod raise_walls;
 mod rho8_pointer;
 mod sink;
