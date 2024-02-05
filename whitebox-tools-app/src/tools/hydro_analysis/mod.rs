@@ -93,6 +93,7 @@ pub use self::longest_flowpath::LongestFlowpath;
 pub use self::max_upslope_flowpath::MaxUpslopeFlowpathLength;
 pub use self::mdinf_flow_accum::MDInfFlowAccumulation;
 pub use self::num_inflowing_neighbours::NumInflowingNeighbours;
+pub use self::parallel_breach_depressions_least_cost::ParallelBreachDepressionsLeastCost;
 pub use self::raise_walls::RaiseWalls;
 pub use self::rho8_pointer::Rho8Pointer;
 pub use self::sink::Sink;

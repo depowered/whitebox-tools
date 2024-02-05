@@ -159,6 +159,7 @@ impl ToolManager {
         tool_names.push("Basins".to_string());
         tool_names.push("BreachDepressions".to_string());
         tool_names.push("BreachDepressionsLeastCost".to_string());
+        tool_names.push("ParallelBreachDepressionsLeastCost".to_string());
         tool_names.push("BreachSingleCellPits".to_string());
         tool_names.push("BurnStreamsAtRoads".to_string());
         tool_names.push("D8FlowAccumulation".to_string());
@@ -581,7 +582,9 @@ impl ToolManager {
             "createrectangularvectorgrid" => {
                 Some(Box::new(gis_analysis::CreateRectangularVectorGrid::new()))
             }
-            "deviationfromregionaldirection" => Some(Box::new(gis_analysis::DeviationFromRegionalDirection::new())), 
+            "deviationfromregionaldirection" => {
+                Some(Box::new(gis_analysis::DeviationFromRegionalDirection::new()))
+            }
             "difference" => Some(Box::new(gis_analysis::Difference::new())),
             "dissolve" => Some(Box::new(gis_analysis::Dissolve::new())),
             "edgeproportion" => Some(Box::new(gis_analysis::EdgeProportion::new())),
@@ -685,6 +688,9 @@ impl ToolManager {
             "breachdepressionsleastcost" => {
                 Some(Box::new(hydro_analysis::BreachDepressionsLeastCost::new()))
             }
+            "parallelbreachdepressionsleastcost" => Some(Box::new(
+                hydro_analysis::ParallelBreachDepressionsLeastCost::new(),
+            )),
             "breachsinglecellpits" => Some(Box::new(hydro_analysis::BreachSingleCellPits::new())),
             "burnstreamsatroads" => Some(Box::new(hydro_analysis::BurnStreamsAtRoads::new())),
             "d8flowaccumulation" => Some(Box::new(hydro_analysis::D8FlowAccumulation::new())),
