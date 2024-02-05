@@ -152,11 +152,108 @@ impl WhiteboxTool for ParallelBreachDepressionsLeastCost {
         verbose: bool,
     ) -> Result<(), Error> {
         println!("Running ParallelBreachDepressionsLeastCost...");
-        for arg in args {
-            println!("arg: {}", arg);
-        }
+        let parsed_args = parse_args(args);
+        println!("Parsed arguements:");
+        dbg!(parsed_args);
         println!("working directory: {}", working_directory);
         println!("verbose: {}", verbose);
         Ok(())
     }
+}
+
+#[derive(Debug)]
+struct Args {
+    input_file: String,
+    output_file: String,
+    max_cost: f64,
+    max_dist: isize,
+    flat_increment: f64,
+    fill_deps: bool,
+    minimize_dist: bool,
+}
+
+impl Default for Args {
+    fn default() -> Self {
+        Args {
+            input_file: "".to_string(),
+            output_file: "".to_string(),
+            max_dist: 20isize,
+            max_cost: f64::INFINITY,
+            flat_increment: f64::NAN,
+            fill_deps: false,
+            minimize_dist: false,
+        }
+    }
+}
+
+fn parse_args(args: Vec<String>) -> Args {
+    let mut parsed_args = Args::default();
+    let mut args_interator = args.iter();
+
+    while let Some(arg) = args_interator.next() {
+        let missing_value_msg = format!("Expected value after {}, found none", arg);
+        match arg.as_str() {
+            "-i" | "--input" | "--dem" => {
+                let next_value = args_interator.next();
+                match next_value {
+                    Some(next_value) if !next_value.starts_with("-") => {
+                        parsed_args.input_file = next_value.clone()
+                    }
+                    _ => panic!("{}", missing_value_msg),
+                }
+            }
+            "-o" | "--output" => {
+                let next_value = args_interator.next();
+                match next_value {
+                    Some(next_value) if !next_value.starts_with("-") => {
+                        parsed_args.output_file = next_value.clone()
+                    }
+                    _ => panic!("{}", missing_value_msg),
+                }
+            }
+            "--dist" => {
+                let next_value = args_interator.next();
+                match next_value {
+                    Some(next_value) if !next_value.starts_with("-") => {
+                        let parsed_int = next_value.parse::<isize>().expect(
+                            format!("Expected an integer for max_dist, found '{}'", next_value)
+                                .as_str(),
+                        );
+                        parsed_args.max_dist = parsed_int;
+                    }
+                    _ => panic!("{}", missing_value_msg),
+                }
+            }
+            "--max_cost" => {
+                let next_value = args_interator.next();
+                match next_value {
+                    Some(next_value) => {
+                        let parsed_float = next_value.parse::<f64>().expect(
+                            format!("Expected an float for max_dist, found '{}'", next_value)
+                                .as_str(),
+                        );
+                        parsed_args.max_cost = parsed_float;
+                    }
+                    _ => panic!("{}", missing_value_msg),
+                }
+            }
+            "--flat_increment" => {
+                let next_value = args_interator.next();
+                match next_value {
+                    Some(next_value) => {
+                        let parsed_float = next_value.parse::<f64>().expect(
+                            format!("Expected an float for max_dist, found '{}'", next_value)
+                                .as_str(),
+                        );
+                        parsed_args.flat_increment = parsed_float;
+                    }
+                    _ => panic!("{}", missing_value_msg),
+                }
+            }
+            "--fill" => parsed_args.fill_deps = true,
+            "--min_dist" => parsed_args.minimize_dist = true,
+            _ => panic!("Found unexpected argument: '{}'", arg),
+        }
+    }
+    parsed_args
 }
