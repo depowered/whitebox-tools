@@ -4,6 +4,7 @@ mod algorithms;
 mod structures;
 use crate::tools::*;
 use std::io::Error;
+use std::path::PathBuf;
 
 pub struct ParallelBreachDepressionsLeastCost {
     name: String,
@@ -152,9 +153,10 @@ impl WhiteboxTool for ParallelBreachDepressionsLeastCost {
         verbose: bool,
     ) -> Result<(), Error> {
         println!("Running ParallelBreachDepressionsLeastCost...");
-        let parsed_args = parse_args(args);
-        println!("Parsed arguements:");
-        dbg!(parsed_args);
+        let parsed_args = parse_args(args)?;
+        let validated_args = validate_args(parsed_args)?;
+        println!("Validated arguements:");
+        dbg!(validated_args);
         println!("working directory: {}", working_directory);
         println!("verbose: {}", verbose);
         Ok(())
@@ -162,7 +164,7 @@ impl WhiteboxTool for ParallelBreachDepressionsLeastCost {
 }
 
 #[derive(Debug)]
-struct Args {
+struct ParsedArgs {
     input_file: String,
     output_file: String,
     max_cost: f64,
@@ -172,43 +174,47 @@ struct Args {
     minimize_dist: bool,
 }
 
-impl Default for Args {
+impl Default for ParsedArgs {
     fn default() -> Self {
-        Args {
+        ParsedArgs {
             input_file: "".to_string(),
             output_file: "".to_string(),
             max_dist: 20isize,
             max_cost: f64::INFINITY,
-            flat_increment: f64::NAN,
+            flat_increment: 1.0_e-10f64,
             fill_deps: false,
             minimize_dist: false,
         }
     }
 }
 
-fn parse_args(args: Vec<String>) -> Args {
-    let mut parsed_args = Args::default();
-    let mut args_interator = args.iter();
+fn parse_args(args: Vec<String>) -> Result<ParsedArgs, Error> {
+    // Split key value args into individual strings
+    // e.g. ["--max_dist=20", "--fill"] => ["--max_dist", "20", "--fill"]
+    let args: Vec<&str> = args.iter().flat_map(|s| s.split("=")).collect();
+
+    let mut parsed_args = ParsedArgs::default();
+    let mut args_interator = args.into_iter();
 
     while let Some(arg) = args_interator.next() {
         let missing_value_msg = format!("Expected value after {}, found none", arg);
-        match arg.as_str() {
+        match arg {
             "-i" | "--input" | "--dem" => {
                 let next_value = args_interator.next();
                 match next_value {
                     Some(next_value) if !next_value.starts_with("-") => {
-                        parsed_args.input_file = next_value.clone()
+                        parsed_args.input_file = next_value.to_owned()
                     }
-                    _ => panic!("{}", missing_value_msg),
+                    _ => return Err(Error::new(ErrorKind::InvalidInput, missing_value_msg)),
                 }
             }
             "-o" | "--output" => {
                 let next_value = args_interator.next();
                 match next_value {
                     Some(next_value) if !next_value.starts_with("-") => {
-                        parsed_args.output_file = next_value.clone()
+                        parsed_args.output_file = next_value.to_owned()
                     }
-                    _ => panic!("{}", missing_value_msg),
+                    _ => return Err(Error::new(ErrorKind::InvalidInput, missing_value_msg)),
                 }
             }
             "--dist" => {
@@ -221,7 +227,7 @@ fn parse_args(args: Vec<String>) -> Args {
                         );
                         parsed_args.max_dist = parsed_int;
                     }
-                    _ => panic!("{}", missing_value_msg),
+                    _ => return Err(Error::new(ErrorKind::InvalidInput, missing_value_msg)),
                 }
             }
             "--max_cost" => {
@@ -234,7 +240,7 @@ fn parse_args(args: Vec<String>) -> Args {
                         );
                         parsed_args.max_cost = parsed_float;
                     }
-                    _ => panic!("{}", missing_value_msg),
+                    _ => return Err(Error::new(ErrorKind::InvalidInput, missing_value_msg)),
                 }
             }
             "--flat_increment" => {
@@ -247,13 +253,64 @@ fn parse_args(args: Vec<String>) -> Args {
                         );
                         parsed_args.flat_increment = parsed_float;
                     }
-                    _ => panic!("{}", missing_value_msg),
+                    _ => return Err(Error::new(ErrorKind::InvalidInput, missing_value_msg)),
                 }
             }
             "--fill" => parsed_args.fill_deps = true,
             "--min_dist" => parsed_args.minimize_dist = true,
-            _ => panic!("Found unexpected argument: '{}'", arg),
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("Found unexpected argument: '{}'", arg),
+                ))
+            }
         }
     }
-    parsed_args
+    Ok(parsed_args)
+}
+
+#[derive(Debug)]
+struct ValidatedArgs {
+    input_file: PathBuf,
+    output_file: PathBuf,
+    max_cost: f64,
+    max_dist: isize,
+    flat_increment: f64,
+    fill_deps: bool,
+    minimize_dist: bool,
+}
+
+fn validate_args(parsed_args: ParsedArgs) -> Result<ValidatedArgs, Error> {
+    let input_file_path = PathBuf::from(parsed_args.input_file);
+    if !input_file_path.exists() {
+        panic!("Input file does not exist")
+    }
+    let output_file_path = PathBuf::from(parsed_args.output_file);
+    match output_file_path.parent() {
+        Some(dir) => {
+            if !dir.exists() {
+                panic!("Output file directory does not exists")
+            }
+        }
+        None => panic!("Output file directory does not exists"),
+    }
+    if !(parsed_args.max_cost > 0f64) {
+        panic!("max_cost must be greater than zero")
+    }
+    if !(parsed_args.max_dist > 0isize) {
+        panic!("max_dist must be greater than zero")
+    }
+    if !(parsed_args.flat_increment > 0f64) {
+        panic!("flat_increment must be greater than zero")
+    }
+    let validated_args = ValidatedArgs {
+        input_file: input_file_path,
+        output_file: output_file_path,
+        max_cost: parsed_args.max_cost,
+        max_dist: parsed_args.max_dist,
+        flat_increment: parsed_args.flat_increment,
+        fill_deps: parsed_args.fill_deps,
+        minimize_dist: parsed_args.minimize_dist,
+    };
+    Ok(validated_args)
 }
