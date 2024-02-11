@@ -12,6 +12,7 @@ kd-tree = "0.5.1"
 miniz_oxide = "0.7.1"
 nalgebra = "0.32.2"
 num_cpus = "1.6.2"
+ordered-float = "4.2.0"
 pathfinding = "4.8.2"
 rand = { version = "0.8.5", features = ["small_rng"] }
 rand_distr = "0.4.3"

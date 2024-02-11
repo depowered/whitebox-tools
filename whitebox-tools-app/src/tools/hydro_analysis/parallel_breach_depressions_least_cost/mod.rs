@@ -271,8 +271,8 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, Error> {
 
 #[derive(Debug)]
 struct ValidatedArgs {
-    input_file: PathBuf,
-    output_file: PathBuf,
+    input_file: String,
+    output_file: String,
     max_cost: f64,
     max_dist: isize,
     flat_increment: f64,
@@ -281,11 +281,11 @@ struct ValidatedArgs {
 }
 
 fn validate_args(parsed_args: ParsedArgs) -> Result<ValidatedArgs, Error> {
-    let input_file_path = PathBuf::from(parsed_args.input_file);
+    let input_file_path = PathBuf::from(parsed_args.input_file.clone());
     if !input_file_path.exists() {
         panic!("Input file does not exist")
     }
-    let output_file_path = PathBuf::from(parsed_args.output_file);
+    let output_file_path = PathBuf::from(parsed_args.output_file.clone());
     match output_file_path.parent() {
         Some(dir) => {
             if !dir.exists() {
@@ -304,8 +304,8 @@ fn validate_args(parsed_args: ParsedArgs) -> Result<ValidatedArgs, Error> {
         panic!("flat_increment must be greater than zero")
     }
     let validated_args = ValidatedArgs {
-        input_file: input_file_path,
-        output_file: output_file_path,
+        input_file: parsed_args.input_file,
+        output_file: parsed_args.output_file,
         max_cost: parsed_args.max_cost,
         max_dist: parsed_args.max_dist,
         flat_increment: parsed_args.flat_increment,

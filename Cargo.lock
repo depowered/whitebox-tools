@@ -2353,6 +2353,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ordered-float"
+version = "4.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a76df7075c7d4d01fdcb46c912dd17fba5b60c78ea480b475f2b6ab6f666584e"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "osmesa-sys"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3945,6 +3954,7 @@ dependencies = [
  "miniz_oxide 0.7.1",
  "nalgebra 0.32.2",
  "num_cpus",
+ "ordered-float 4.2.0",
  "pathfinding",
  "rand 0.8.5",
  "rand_distr",
