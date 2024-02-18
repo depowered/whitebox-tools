@@ -7,8 +7,9 @@ use whitebox_raster::{Raster, RasterConfigs};
 pub fn parallel_breach_depressions_least_cost(args: ValidatedArgs) -> Result<(), BreachError> {
     let raster = Raster::new(args.input_file.as_str(), "r")?;
     let configs = raster.configs.clone();
-    let matrix = raster_to_matrix(raster)?;
+    let mut matrix = raster_to_matrix(raster)?;
     let pits = identify_pits(&matrix, configs.nodata.clone());
+    let pits = raise_pits(&mut matrix, pits, args.flat_increment);
     let (matrix, pit_resolution_tracker) = resolve_pits(
         pits,
         args.max_cost,
@@ -27,7 +28,7 @@ pub fn parallel_breach_depressions_least_cost(args: ValidatedArgs) -> Result<(),
     }
 }
 
-pub fn raster_to_matrix(raster: Raster) -> Result<Matrix<OrderedFloat<f64>>, MatrixFormatError> {
+fn raster_to_matrix(raster: Raster) -> Result<Matrix<OrderedFloat<f64>>, MatrixFormatError> {
     let mut values: Vec<f64> = vec![];
     for row in 0..raster.configs.rows as isize {
         values.append(&mut raster.get_row_data(row))
@@ -36,7 +37,7 @@ pub fn raster_to_matrix(raster: Raster) -> Result<Matrix<OrderedFloat<f64>>, Mat
     Matrix::from_vec(raster.configs.rows, raster.configs.columns, values)
 }
 
-pub fn matrix_to_raster(
+fn matrix_to_raster(
     matrix: Matrix<OrderedFloat<f64>>,
     file_name: &str,
     configs: &RasterConfigs,
@@ -44,25 +45,54 @@ pub fn matrix_to_raster(
     let mut raster = Raster::initialize_using_config(file_name, configs);
     for (row, values) in matrix.iter().enumerate() {
         let values: Vec<f64> = values.into_iter().map(|v| v.into_inner()).collect();
-        raster.set_row_data(row as isize, values.to_owned())
+        raster.set_row_data(row as isize, values)
     }
     raster
 }
 
-pub fn identify_pits(matrix: &Matrix<OrderedFloat<f64>>, nodata: f64) -> Vec<CellIndex> {
-    let mut pits: Vec<CellIndex> = vec![];
+fn identify_pits(matrix: &Matrix<OrderedFloat<f64>>, nodata: f64) -> Vec<Pit> {
+    let mut pits: Vec<Pit> = vec![];
     let nodata = OrderedFloat(nodata);
     for index in matrix.keys() {
-        if let CellKind::Pit = CellKind::from_matrix(index, matrix, &nodata) {
-            pits.push(CellIndex::from(index));
+        if let CellKind::Pit = CellKind::from_matrix(index, matrix, nodata) {
+            if let Some(elevation) = matrix.get(index) {
+                pits.push(Pit {
+                    index: CellIndex::from(index),
+                    elevation: *elevation,
+                })
+            }
         }
     }
     pits
 }
 
+fn raise_pits(
+    matrix: &mut Matrix<OrderedFloat<f64>>,
+    pits: Vec<Pit>,
+    flat_increment: f64,
+) -> Vec<Pit> {
+    let mut raised_pits = vec![];
+    for pit in pits {
+        let min_neighbor_elevation =
+            CellKind::get_neighbor_elevations(pit.index.as_usize(), matrix)
+                .iter()
+                .min()
+                .unwrap()
+                .clone();
+        if let Some(pit_elevation) = matrix.get_mut(pit.index.as_usize()) {
+            *pit_elevation = min_neighbor_elevation - flat_increment;
+            raised_pits.push(Pit {
+                index: pit.index,
+                elevation: *pit_elevation,
+            });
+        }
+    }
+    raised_pits
+}
+
 #[allow(unused_variables)]
-pub fn resolve_pits(
-    pits: Vec<CellIndex>,
+fn resolve_pits(
+    pits: Vec<Pit>,
     max_cost: f64,
     max_dist: isize,
     flat_increment: f64,
@@ -72,7 +102,7 @@ pub fn resolve_pits(
 }
 
 #[allow(unused_variables)]
-pub fn fill_remaining_pits(
+fn fill_remaining_pits(
     matrix: Matrix<OrderedFloat<f64>>,
     pits: Vec<CellIndex>,
 ) -> Matrix<OrderedFloat<f64>> {
