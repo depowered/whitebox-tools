@@ -1,110 +1,11 @@
 use anyhow::{anyhow, Result};
 use ordered_float::OrderedFloat;
-use pathfinding::prelude::Matrix;
 use whitebox_raster::Raster;
 
-#[derive(PartialEq, Eq)]
-pub struct CellIndex {
-    row: usize,
-    column: usize,
-}
-
-impl From<(usize, usize)> for CellIndex {
-    fn from(index: (usize, usize)) -> Self {
-        let (row, column) = index;
-        CellIndex { row, column }
-    }
-}
-
-impl CellIndex {
-    pub fn euclidean_distance(self: &Self, other: &CellIndex) -> f64 {
-        let square_dist =
-            ((other.row - self.row).pow(2) + (other.column - self.column).pow(2)) as f64;
-        square_dist.sqrt()
-    }
-
-    pub fn as_usize(self: &Self) -> (usize, usize) {
-        (self.row, self.column)
-    }
-
-    pub fn as_isize(self: &Self) -> (isize, isize) {
-        (self.row as isize, self.column as isize)
-    }
-}
-
-#[derive(PartialEq, Eq)]
-pub struct Pit {
-    pub index: CellIndex,
-    pub elevation: OrderedFloat<f64>,
-}
-
-pub struct PitResolutionTracker {
-    pub unseen: Vec<CellIndex>,
-    pub in_progress: Vec<CellIndex>,
-    pub solved: Vec<CellIndex>,
-    pub unsolved: Vec<CellIndex>,
-}
-
-pub enum BreachError {
-    RasterIOError(std::io::Error),
-    MatrixFormatError(pathfinding::matrix::MatrixFormatError),
-}
-
-impl From<std::io::Error> for BreachError {
-    fn from(error: std::io::Error) -> Self {
-        BreachError::RasterIOError(error)
-    }
-}
-
-impl From<pathfinding::matrix::MatrixFormatError> for BreachError {
-    fn from(error: pathfinding::matrix::MatrixFormatError) -> Self {
-        BreachError::MatrixFormatError(error)
-    }
-}
-
-pub enum CellKind {
-    Flowable,
-    Pit,
-    Nodata,
-}
-
-impl CellKind {
-    pub fn from_matrix(
-        index: (usize, usize),
-        matrix: &Matrix<OrderedFloat<f64>>,
-        nodata: OrderedFloat<f64>,
-    ) -> CellKind {
-        let elevation = match matrix.get(index) {
-            Some(elevation) => *elevation,
-            None => return CellKind::Nodata,
-        };
-        let neighbor_elevations = Self::get_neighbor_elevations(index, matrix);
-        for neighbor_elevation in neighbor_elevations {
-            if neighbor_elevation == nodata || neighbor_elevation < elevation {
-                return CellKind::Flowable;
-            }
-        }
-        return CellKind::Pit;
-    }
-
-    pub fn get_neighbor_elevations(
-        index: (usize, usize),
-        matrix: &Matrix<OrderedFloat<f64>>,
-    ) -> Vec<OrderedFloat<f64>> {
-        let mut neighbor_elevations = vec![];
-        for neighbor_index in matrix.neighbours(index, true) {
-            if let Some(elevation) = matrix.get(neighbor_index) {
-                neighbor_elevations.push(*elevation);
-            }
-        }
-        neighbor_elevations
-    }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct CellData {
-    index: (usize, usize),
-    value: OrderedFloat<f64>,
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+pub struct CellData {
+    pub index: (usize, usize),
+    pub value: OrderedFloat<f64>,
 }
 
 impl CellData {
@@ -116,14 +17,14 @@ impl CellData {
     }
 }
 
-enum InitalState {
+pub enum InitalState {
     NoData,
     Flowable,
     RawPit,
 }
 
-#[derive(Debug, Eq, PartialEq)]
-enum CellState {
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+pub enum CellState {
     NoData(CellData),
     Flowable(CellData),
     RawPit(CellData),
@@ -131,14 +32,14 @@ enum CellState {
     UnsolvedPit(CellData),
 }
 
-enum CellTransition {
+pub enum CellTransition {
     RaisePit(OrderedFloat<f64>),
     Breach(OrderedFloat<f64>),
     MarkUnsolved,
 }
 
 impl CellState {
-    fn new(
+    pub fn new(
         inital_state: InitalState,
         index: (usize, usize),
         value: OrderedFloat<f64>,
@@ -150,7 +51,7 @@ impl CellState {
         }
     }
 
-    fn from_raster(raster: &Raster, row: isize, column: isize) -> CellState {
+    pub fn from_raster(raster: &Raster, row: isize, column: isize) -> CellState {
         let nodata = OrderedFloat(raster.configs.nodata);
         let index = (row as usize, column as usize);
         let value = OrderedFloat(raster.get_value(row, column));
@@ -186,7 +87,7 @@ impl CellState {
         return CellState::new(InitalState::RawPit, index, value);
     }
 
-    fn transition(self: Self, transition: CellTransition) -> Result<CellState> {
+    pub fn transition(self: Self, transition: CellTransition) -> Result<CellState> {
         match (self, transition) {
             // There are no valid transitions starting from NoData
             (CellState::NoData(_), _) => Err(anyhow!("NoData is immutable")),
@@ -217,7 +118,7 @@ impl CellState {
         }
     }
 
-    fn get_data(self: &Self) -> &CellData {
+    pub fn get_data(self: &Self) -> &CellData {
         match self {
             CellState::NoData(data) => data,
             CellState::Flowable(data) => data,
@@ -227,12 +128,19 @@ impl CellState {
         }
     }
 
-    fn distance(self: &Self, other: &CellState) -> OrderedFloat<f64> {
+    pub fn distance(self: &Self, other: &CellState) -> OrderedFloat<f64> {
         let (row1, column1) = self.get_data().index;
         let (row2, column2) = other.get_data().index;
         let square_dist = ((row2 - row1).pow(2) + (column2 - column1).pow(2)) as f64;
         OrderedFloat(square_dist.sqrt())
     }
+}
+
+pub struct PitResolutionTracker {
+    pub unseen: Vec<CellState>,
+    pub in_progress: Vec<CellState>,
+    pub solved: Vec<CellState>,
+    pub unsolved: Vec<CellState>,
 }
 
 #[cfg(test)]
