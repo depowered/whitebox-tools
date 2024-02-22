@@ -128,6 +128,14 @@ impl CellState {
         }
     }
 
+    pub fn get_value(self: &Self) -> OrderedFloat<f64> {
+        self.get_data().value
+    }
+
+    pub fn get_index(self: &Self) -> (usize, usize) {
+        self.get_data().index
+    }
+
     pub fn distance(self: &Self, other: &CellState) -> OrderedFloat<f64> {
         let (row1, column1) = self.get_data().index;
         let (row2, column2) = other.get_data().index;

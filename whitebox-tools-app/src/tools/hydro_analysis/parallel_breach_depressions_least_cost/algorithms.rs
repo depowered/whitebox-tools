@@ -39,10 +39,10 @@ fn raster_to_matrix(raster: Raster) -> Result<Matrix<CellState>, MatrixFormatErr
 
 fn matrix_to_raster(matrix: Matrix<CellState>, file_name: &str, configs: &RasterConfigs) -> Raster {
     let mut raster = Raster::initialize_using_config(file_name, configs);
-    for (row, values) in matrix.iter().enumerate() {
-        let values: Vec<f64> = values
+    for (row, states) in matrix.iter().enumerate() {
+        let values: Vec<f64> = states
             .into_iter()
-            .map(|v| v.get_data().value.into_inner())
+            .map(|v| v.get_value().into_inner())
             .collect();
         raster.set_row_data(row as isize, values)
     }
@@ -72,11 +72,11 @@ fn raise_pits(
 ) -> Vec<CellState> {
     let mut raised_pits = vec![];
     for raw_pit in raw_pits {
-        let index = raw_pit.get_data().index;
+        let index = raw_pit.get_index();
 
         let min_neighbor_value: OrderedFloat<f64> = get_neighbor_states(matrix, index)
             .iter()
-            .map(|state| state.get_data().value)
+            .map(|state| state.get_value())
             .min()
             .unwrap();
 
@@ -108,8 +108,8 @@ fn get_cost_to_successor(
     let neighbor_dist_from_pit = node_dist_from_pit + node.distance(neighbor);
     let accum_flat_increment = neighbor_dist_from_pit * flat_increment;
 
-    let pit_value = raised_pit.get_data().value;
-    let neighbor_value = neighbor.get_data().value;
+    let pit_value = raised_pit.get_value();
+    let neighbor_value = neighbor.get_value();
 
     let cost = neighbor_value - (pit_value + accum_flat_increment);
 
@@ -128,7 +128,7 @@ fn dijkstra_successors(
     flat_increment: OrderedFloat<f64>,
     max_cost: OrderedFloat<f64>,
 ) -> Vec<(CellState, OrderedFloat<f64>)> {
-    let neighbors = get_neighbor_states(matrix, node.get_data().index);
+    let neighbors = get_neighbor_states(matrix, node.get_index());
     let mut costs = vec![];
     for neighbor in neighbors {
         costs.push((
@@ -148,7 +148,7 @@ fn dijkstra_success(
     raised_pit: &CellState,
     flat_increment: OrderedFloat<f64>,
 ) -> bool {
-    let pit_value = raised_pit.get_data().value;
+    let pit_value = raised_pit.get_value();
     let distance = raised_pit.distance(node);
     let is_success = |value: OrderedFloat<f64>| value < (pit_value - distance * flat_increment);
     match node {
@@ -253,11 +253,11 @@ mod tests {
 
         assert_eq!(
             OrderedFloat(raster.get_value(0, 1)),
-            matrix.get((0, 1)).unwrap().get_data().value
+            matrix.get((0, 1)).unwrap().get_value()
         );
         assert_eq!(
             OrderedFloat(raster.get_value(2, 1)),
-            matrix.get((2, 1)).unwrap().get_data().value
+            matrix.get((2, 1)).unwrap().get_value()
         );
     }
 
