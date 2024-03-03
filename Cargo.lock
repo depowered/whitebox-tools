@@ -3965,6 +3965,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "statrs",
+ "threadpool",
  "time 0.3.20",
  "typenum",
  "whitebox_common",

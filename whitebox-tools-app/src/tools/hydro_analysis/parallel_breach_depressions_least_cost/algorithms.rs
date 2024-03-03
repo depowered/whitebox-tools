@@ -5,6 +5,8 @@ use super::ValidatedArgs;
 use anyhow::Result;
 use ordered_float::OrderedFloat;
 use pathfinding::prelude::{dijkstra, Matrix, MatrixFormatError};
+use std::sync::mpsc::channel;
+use threadpool::ThreadPool;
 use whitebox_raster::{Raster, RasterConfigs};
 
 pub fn parallel_breach_depressions_least_cost(args: ValidatedArgs) -> Result<()> {
@@ -25,28 +27,52 @@ pub fn parallel_breach_depressions_least_cost(args: ValidatedArgs) -> Result<()>
     // Initialize structures used for tracking breach progress and results
     let mut in_progress: HashSet<CellData> = HashSet::new();
 
-    // Attempt to breach each pit
+    // Attempt to breach each pit using the main thread to prepare search matrices and apply breach
+    // paths with worker threads responsible for preforming the breach path searches
+    let (sender, receiver) = channel::<Vec<(CellState, CellTransition)>>();
+    let num_workers = args.num_threads - 1;
+    let pool = ThreadPool::new(num_workers);
+
     while !raised_pits.is_empty() && !in_progress.is_empty() {
-        // Check if a thread has returned a result, modifying the in_progress set
-        // If a path was found, modify the matrix
-        // If a path was not found, store the state as UnsolvedPit in unsolved_pits
+        // Only prepare and dispatch a search operation if the queue is empty to limit memory
+        // consumption
+        if pool.queued_count() < 1 {
+            // Prepare the next pit for breach path search if one is available
+            if let Some(raised_pit) =
+                get_next_available_pit(&mut raised_pits, &mut in_progress, args.max_dist)
+            {
+                let search_matrix = get_search_matrix(&matrix, &raised_pit, args.max_dist);
 
-        // Prepare the next pit for pathfinding
-        if let Some(raised_pit) =
-            get_next_available_pit(&mut raised_pits, &mut in_progress, args.max_dist)
-        {
-            let search_matrix = get_search_matrix(&matrix, &raised_pit, args.max_dist);
+                // Dispatch the search operation to a worker thread
+                let sender = sender.clone();
+                pool.execute(move || {
+                    let path = find_path_with_dijkstra(
+                        &raised_pit,
+                        &search_matrix,
+                        args.flat_increment,
+                        args.max_cost,
+                        args.minimize_dist,
+                    );
+                    let transitions =
+                        compute_cell_transitions(path, &raised_pit, args.flat_increment);
+                    sender
+                        .send(transitions)
+                        .expect("An error occurred while sending data to the main thread.");
+                });
+            }
+        }
 
-            // Dispatch the pathfinding operation to a worker thread
-            let path = find_path_with_dijkstra(
-                &raised_pit,
-                &search_matrix,
-                args.flat_increment,
-                args.max_cost,
-                args.minimize_dist,
-            );
-            let transitions = compute_cell_transitions(path, &raised_pit, args.flat_increment);
-            apply_cell_transitions(&mut matrix, transitions)?;
+        // Check for any completed search operations, handling them accordingly
+        // Otherwise, continue to the top of the loop and prepare another search operation
+        match receiver.try_recv() {
+            Ok(transitions) => {
+                // Remove the pit from the in_progress set
+                let pit_data = transitions[0].0.get_data();
+                in_progress.remove(pit_data);
+                // Modify the matrix to reflect the pathfinding result
+                apply_cell_transitions(&mut matrix, transitions)?;
+            }
+            Err(_) => continue,
         }
     }
 
