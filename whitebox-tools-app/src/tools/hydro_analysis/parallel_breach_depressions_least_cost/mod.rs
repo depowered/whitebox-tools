@@ -3,6 +3,7 @@ mod algorithms;
 #[allow(dead_code)]
 mod structures;
 use crate::tools::*;
+use ordered_float::OrderedFloat;
 use std::io::Error;
 use std::path::PathBuf;
 
@@ -155,7 +156,7 @@ impl WhiteboxTool for ParallelBreachDepressionsLeastCost {
         println!("Running ParallelBreachDepressionsLeastCost...");
         let parsed_args = parse_args(args)?;
         let validated_args = validate_args(parsed_args)?;
-        println!("Validated arguements:");
+        println!("Validated arguments:");
         dbg!(validated_args);
         println!("working directory: {}", working_directory);
         println!("verbose: {}", verbose);
@@ -170,6 +171,7 @@ struct ParsedArgs {
     max_cost: f64,
     max_dist: isize,
     flat_increment: f64,
+    num_threads: isize,
     fill_deps: bool,
     minimize_dist: bool,
 }
@@ -182,6 +184,7 @@ impl Default for ParsedArgs {
             max_dist: 20isize,
             max_cost: f64::INFINITY,
             flat_increment: 1.0_e-10f64,
+            num_threads: -1,
             fill_deps: false,
             minimize_dist: false,
         }
@@ -194,13 +197,13 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, Error> {
     let args: Vec<&str> = args.iter().flat_map(|s| s.split("=")).collect();
 
     let mut parsed_args = ParsedArgs::default();
-    let mut args_interator = args.into_iter();
+    let mut args_iterator = args.into_iter();
 
-    while let Some(arg) = args_interator.next() {
+    while let Some(arg) = args_iterator.next() {
         let missing_value_msg = format!("Expected value after {}, found none", arg);
         match arg {
             "-i" | "--input" | "--dem" => {
-                let next_value = args_interator.next();
+                let next_value = args_iterator.next();
                 match next_value {
                     Some(next_value) if !next_value.starts_with("-") => {
                         parsed_args.input_file = next_value.to_owned()
@@ -209,7 +212,7 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, Error> {
                 }
             }
             "-o" | "--output" => {
-                let next_value = args_interator.next();
+                let next_value = args_iterator.next();
                 match next_value {
                     Some(next_value) if !next_value.starts_with("-") => {
                         parsed_args.output_file = next_value.to_owned()
@@ -218,7 +221,7 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, Error> {
                 }
             }
             "--dist" => {
-                let next_value = args_interator.next();
+                let next_value = args_iterator.next();
                 match next_value {
                     Some(next_value) if !next_value.starts_with("-") => {
                         let parsed_int = next_value.parse::<isize>().expect(
@@ -231,7 +234,7 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, Error> {
                 }
             }
             "--max_cost" => {
-                let next_value = args_interator.next();
+                let next_value = args_iterator.next();
                 match next_value {
                     Some(next_value) => {
                         let parsed_float = next_value.parse::<f64>().expect(
@@ -244,7 +247,7 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, Error> {
                 }
             }
             "--flat_increment" => {
-                let next_value = args_interator.next();
+                let next_value = args_iterator.next();
                 match next_value {
                     Some(next_value) => {
                         let parsed_float = next_value.parse::<f64>().expect(
@@ -252,6 +255,19 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, Error> {
                                 .as_str(),
                         );
                         parsed_args.flat_increment = parsed_float;
+                    }
+                    _ => return Err(Error::new(ErrorKind::InvalidInput, missing_value_msg)),
+                }
+            }
+            "--num_threads" => {
+                let next_value = args_iterator.next();
+                match next_value {
+                    Some(next_value) => {
+                        let parsed_int = next_value.parse::<isize>().expect(
+                            format!("Expected an integer for max_dist, found '{}'", next_value)
+                                .as_str(),
+                        );
+                        parsed_args.num_threads = parsed_int;
                     }
                     _ => return Err(Error::new(ErrorKind::InvalidInput, missing_value_msg)),
                 }
@@ -273,9 +289,10 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, Error> {
 struct ValidatedArgs {
     input_file: String,
     output_file: String,
-    max_cost: f64,
-    max_dist: isize,
-    flat_increment: f64,
+    max_cost: OrderedFloat<f64>,
+    max_dist: usize,
+    flat_increment: OrderedFloat<f64>,
+    num_threads: usize,
     fill_deps: bool,
     minimize_dist: bool,
 }
@@ -303,12 +320,21 @@ fn validate_args(parsed_args: ParsedArgs) -> Result<ValidatedArgs, Error> {
     if !(parsed_args.flat_increment > 0f64) {
         panic!("flat_increment must be greater than zero")
     }
+
+    // Calculate the number of available threads
+    let num_threads = match parsed_args.num_threads {
+        isize::MIN..=-1 => num_cpus::get(),
+        0..=1 => panic!("num_threads must be at least 2"),
+        _ => std::cmp::min(parsed_args.num_threads as usize, num_cpus::get()),
+    };
+
     let validated_args = ValidatedArgs {
         input_file: parsed_args.input_file,
         output_file: parsed_args.output_file,
-        max_cost: parsed_args.max_cost,
-        max_dist: parsed_args.max_dist,
-        flat_increment: parsed_args.flat_increment,
+        max_cost: OrderedFloat(parsed_args.max_cost),
+        max_dist: parsed_args.max_dist as usize,
+        flat_increment: OrderedFloat(parsed_args.flat_increment),
+        num_threads: num_threads,
         fill_deps: parsed_args.fill_deps,
         minimize_dist: parsed_args.minimize_dist,
     };

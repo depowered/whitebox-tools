@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::{anyhow, Result};
 use ordered_float::OrderedFloat;
 use whitebox_raster::Raster;
@@ -15,9 +17,16 @@ impl CellData {
             value: new_value,
         }
     }
+
+    pub fn distance(self: &Self, other: &CellData) -> OrderedFloat<f64> {
+        let (row1, column1) = self.index;
+        let (row2, column2) = other.index;
+        let square_dist = ((row2 - row1).pow(2) + (column2 - column1).pow(2)) as f64;
+        OrderedFloat(square_dist.sqrt())
+    }
 }
 
-pub enum InitalState {
+pub enum InitialState {
     NoData,
     Flowable,
     RawPit,
@@ -40,14 +49,14 @@ pub enum CellTransition {
 
 impl CellState {
     pub fn new(
-        inital_state: InitalState,
+        initial_state: InitialState,
         index: (usize, usize),
         value: OrderedFloat<f64>,
     ) -> CellState {
-        match inital_state {
-            InitalState::NoData => Self::NoData(CellData { index, value }),
-            InitalState::Flowable => Self::Flowable(CellData { index, value }),
-            InitalState::RawPit => Self::RawPit(CellData { index, value }),
+        match initial_state {
+            InitialState::NoData => Self::NoData(CellData { index, value }),
+            InitialState::Flowable => Self::Flowable(CellData { index, value }),
+            InitialState::RawPit => Self::RawPit(CellData { index, value }),
         }
     }
 
@@ -58,11 +67,11 @@ impl CellState {
 
         // Check if the CellState is NoData
         if value == nodata {
-            return CellState::new(InitalState::NoData, index, value);
+            return CellState::new(InitialState::NoData, index, value);
         }
 
         // Check if the CellState is Flowable. That is, at least one neighbor has a value
-        // that is equal to nodata or lower than the central cell value
+        // that is equal to NoData or lower than the central cell value
         let neighbor_positions = [
             (row - 1, column + 0), // Up
             (row - 1, column + 1), // Up-Right
@@ -79,12 +88,12 @@ impl CellState {
             .collect();
         for neighbor_value in neighbor_values {
             if neighbor_value == nodata || neighbor_value < value {
-                return CellState::new(InitalState::Flowable, index, value);
+                return CellState::new(InitialState::Flowable, index, value);
             }
         }
 
         // If the CellState is neither Flowable nor NoData, it must be a RawPit
-        return CellState::new(InitalState::RawPit, index, value);
+        return CellState::new(InitialState::RawPit, index, value);
     }
 
     pub fn transition(self: Self, transition: CellTransition) -> Result<CellState> {
@@ -146,9 +155,54 @@ impl CellState {
 
 pub struct PitResolutionTracker {
     pub unseen: Vec<CellState>,
-    pub in_progress: Vec<CellState>,
-    pub solved: Vec<CellState>,
-    pub unsolved: Vec<CellState>,
+    pub in_progress: HashSet<CellState>,
+    pub solved: HashSet<CellState>,
+    pub unsolved: HashSet<CellState>,
+}
+
+impl PitResolutionTracker {
+    /// Create a new instance of PitResolutionTracker with unseen pits ordered from highest
+    /// to lowest value
+    fn new(raised_pits: Vec<CellState>) -> PitResolutionTracker {
+        let mut sorted = raised_pits.clone();
+        sorted.sort_by(|a, b| b.get_value().cmp(&a.get_value()));
+
+        PitResolutionTracker {
+            unseen: sorted,
+            in_progress: HashSet::new(),
+            solved: HashSet::new(),
+            unsolved: HashSet::new(),
+        }
+    }
+
+    fn get_next_available_pit(self: &mut Self, max_dist: isize) -> Option<CellState> {
+        // No more unseen pits to solve
+        if self.unseen.is_empty() {
+            return None;
+        }
+
+        // If no pits are in progress, return the lowest value pit without preforming distance calcs
+        if self.in_progress.is_empty() {
+            let pit = self.unseen.pop()?;
+            self.in_progress.insert(pit.clone());
+            return Some(pit);
+        }
+
+        // Find the lowest value pit that is at least two times the max distance from any pit
+        // currently in progress
+        let min_dist_between = OrderedFloat((2 * max_dist) as f64);
+        for (i, pit) in self.unseen.iter().enumerate().rev() {
+            for in_progress_pit in self.in_progress.iter() {
+                if pit.distance(in_progress_pit) < min_dist_between {
+                    continue;
+                }
+            }
+            let pit = self.unseen.remove(i);
+            self.in_progress.insert(pit.clone());
+            return Some(pit);
+        }
+        return None;
+    }
 }
 
 #[cfg(test)]
@@ -156,7 +210,7 @@ mod tests {
     use ordered_float::OrderedFloat;
     use whitebox_raster::{Raster, RasterConfigs};
 
-    use super::{CellData, CellState, CellTransition, InitalState};
+    use super::{CellData, CellState, CellTransition, InitialState, PitResolutionTracker};
 
     #[test]
     fn internal_state_access() {
@@ -173,7 +227,7 @@ mod tests {
     }
     #[test]
     fn new() {
-        let state = CellState::new(InitalState::RawPit, (1, 1), OrderedFloat(20.2));
+        let state = CellState::new(InitialState::RawPit, (1, 1), OrderedFloat(20.2));
         assert!(matches!(state, CellState::RawPit(..)));
     }
 
@@ -198,24 +252,24 @@ mod tests {
 
         // The edge is Flowable because it has NoData neighbors
         assert_eq!(
-            CellState::new(InitalState::Flowable, (0, 0), OrderedFloat(5.1)),
+            CellState::new(InitialState::Flowable, (0, 0), OrderedFloat(5.1)),
             CellState::from_raster(&raster, 0, 0)
         );
         // The center is RawPit because all neighbors are higher
         assert_eq!(
-            CellState::new(InitalState::RawPit, (1, 1), OrderedFloat(1.0)),
+            CellState::new(InitialState::RawPit, (1, 1), OrderedFloat(1.0)),
             CellState::from_raster(&raster, 1, 1)
         );
         // Cells out of range are NoData
         assert_eq!(
-            CellState::new(InitalState::NoData, (5, 5), OrderedFloat(-9999.0)),
+            CellState::new(InitialState::NoData, (5, 5), OrderedFloat(-9999.0)),
             CellState::from_raster(&raster, 5, 5)
         );
     }
 
     #[test]
     fn raise_pit_transition() {
-        let state = CellState::new(InitalState::RawPit, (1, 1), OrderedFloat(20.2));
+        let state = CellState::new(InitialState::RawPit, (1, 1), OrderedFloat(20.2));
         let new_value = OrderedFloat(42.1);
         let raise_pit = CellTransition::RaisePit(new_value);
         let new_state = state.transition(raise_pit);
@@ -228,7 +282,7 @@ mod tests {
 
     #[test]
     fn no_data_is_immutable() {
-        let state = CellState::new(InitalState::NoData, (1, 1), OrderedFloat(-9999.0));
+        let state = CellState::new(InitialState::NoData, (1, 1), OrderedFloat(-9999.0));
         let new_state = state.transition(CellTransition::Breach(OrderedFloat(100.0)));
         if let Ok(_) = new_state {
             panic!("Unreachable")
@@ -237,18 +291,46 @@ mod tests {
 
     #[test]
     fn get_data() {
-        let state = CellState::new(InitalState::RawPit, (1, 1), OrderedFloat(20.2));
+        let state = CellState::new(InitialState::RawPit, (1, 1), OrderedFloat(20.2));
         assert_eq!(state.get_data().index, (1, 1));
         assert_eq!(state.get_data().value, OrderedFloat(20.2));
     }
 
     #[test]
     fn distance() {
-        let state = CellState::new(InitalState::RawPit, (1, 1), OrderedFloat(20.2));
-        let other = CellState::new(InitalState::Flowable, (2, 2), OrderedFloat(42.1));
+        let state = CellState::new(InitialState::RawPit, (1, 1), OrderedFloat(20.2));
+        let other = CellState::new(InitialState::Flowable, (2, 2), OrderedFloat(42.1));
         assert_eq!(state.distance(&other), OrderedFloat(2.0f64.sqrt()));
 
-        let other = CellState::new(InitalState::Flowable, (4, 5), OrderedFloat(42.1));
+        let other = CellState::new(InitialState::Flowable, (4, 5), OrderedFloat(42.1));
         assert_eq!(state.distance(&other), OrderedFloat(5.0f64));
+    }
+
+    #[test]
+    fn new_pit_resolution_tracker_sorts_unseen_highest_to_lowest() {
+        let raised_pits = vec![
+            CellState::RaisedPit(CellData {
+                index: (1, 1),
+                value: OrderedFloat(1.0),
+            }),
+            CellState::RaisedPit(CellData {
+                index: (2, 2),
+                value: OrderedFloat(2.0),
+            }),
+            CellState::RaisedPit(CellData {
+                index: (3, 3),
+                value: OrderedFloat(3.0),
+            }),
+            CellState::RaisedPit(CellData {
+                index: (4, 4),
+                value: OrderedFloat(4.0),
+            }),
+        ];
+
+        let tracker = PitResolutionTracker::new(raised_pits);
+        assert_eq!(tracker.unseen[0].get_value().into_inner(), 4.0_f64);
+        assert_eq!(tracker.unseen[1].get_value().into_inner(), 3.0_f64);
+        assert_eq!(tracker.unseen[2].get_value().into_inner(), 2.0_f64);
+        assert_eq!(tracker.unseen[3].get_value().into_inner(), 1.0_f64);
     }
 }
