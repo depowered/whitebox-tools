@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use super::structures::*;
+use super::structures::{CellData, CellState, CellTransition};
 use super::ValidatedArgs;
 use anyhow::Result;
 use ordered_float::OrderedFloat;
@@ -8,6 +8,8 @@ use pathfinding::prelude::{dijkstra, Matrix, MatrixFormatError};
 use std::sync::mpsc::channel;
 use threadpool::ThreadPool;
 use whitebox_raster::{DataType, Raster, RasterConfigs};
+
+const MATRIX_OFFSET: isize = 0;
 
 pub fn parallel_breach_depressions_least_cost(args: ValidatedArgs) -> Result<()> {
     // Load the input raster into memory
@@ -164,7 +166,7 @@ fn raise_pits(
 ) -> Vec<CellState> {
     let mut raised_pits = vec![];
     for raw_pit in raw_pits {
-        let index = raw_pit.get_index();
+        let index = raw_pit.get_matrix_index(MATRIX_OFFSET);
 
         let min_neighbor_value: OrderedFloat<f64> = get_neighbor_states(matrix, index)
             .iter()
@@ -226,7 +228,7 @@ fn get_search_matrix(
     raised_pit: &CellState,
     max_dist: usize,
 ) -> Matrix<CellState> {
-    let (row, column) = raised_pit.get_index();
+    let (row, column) = raised_pit.get_matrix_index(MATRIX_OFFSET);
 
     // Guard against under-flowing the row or column indices
     let min_row = std::cmp::max(0, row as isize - max_dist as isize) as usize;
@@ -294,7 +296,7 @@ fn dijkstra_successors(
     max_cost: OrderedFloat<f64>,
     minimize_dist: bool,
 ) -> Vec<(CellState, OrderedFloat<f64>)> {
-    let neighbors = get_neighbor_states(matrix, node.get_index());
+    let neighbors = get_neighbor_states(matrix, node.get_matrix_index(MATRIX_OFFSET));
     let mut costs = vec![];
     for neighbor in neighbors {
         costs.push((
@@ -329,9 +331,9 @@ fn dijkstra_success(
     match node {
         CellState::NoData(_) => true,
         CellState::RawPit(_) => false,
-        CellState::Flowable(data) => is_success(data.value),
-        CellState::RaisedPit(data) => is_success(data.value),
-        CellState::UnsolvedPit(data) => is_success(data.value),
+        CellState::Flowable(data) => is_success(data.get_value()),
+        CellState::RaisedPit(data) => is_success(data.get_value()),
+        CellState::UnsolvedPit(data) => is_success(data.get_value()),
     }
 }
 
@@ -399,7 +401,7 @@ fn apply_cell_transitions(
     transitions: Vec<(CellState, CellTransition)>,
 ) -> Result<()> {
     for (cell, transition) in transitions {
-        let index = cell.get_index();
+        let index = cell.get_matrix_index(MATRIX_OFFSET);
         *matrix.get_mut(index).expect(
             "The transitions are derived from the matrix, so the corresponding index will always be in range.",
         ) = cell.transition(transition)?;
@@ -434,15 +436,15 @@ mod tests {
 
     fn get_mock_matrix() -> Matrix<CellState> {
         let values = vec![
-            CellState::new(InitialState::Flowable, (0, 0), OrderedFloat(5.1)),
-            CellState::new(InitialState::Flowable, (0, 1), OrderedFloat(5.2)),
-            CellState::new(InitialState::Flowable, (0, 2), OrderedFloat(5.3)),
-            CellState::new(InitialState::Flowable, (1, 0), OrderedFloat(6.1)),
-            CellState::new(InitialState::RawPit, (1, 1), OrderedFloat(1.0)),
-            CellState::new(InitialState::Flowable, (1, 2), OrderedFloat(6.3)),
-            CellState::new(InitialState::Flowable, (2, 0), OrderedFloat(7.1)),
-            CellState::new(InitialState::Flowable, (2, 1), OrderedFloat(7.2)),
-            CellState::new(InitialState::Flowable, (2, 2), OrderedFloat(7.3)),
+            CellState::Flowable(CellData::new(0, 0, 5.1)),
+            CellState::Flowable(CellData::new(0, 1, 5.2)),
+            CellState::Flowable(CellData::new(0, 2, 5.3)),
+            CellState::Flowable(CellData::new(1, 0, 6.1)),
+            CellState::RawPit(CellData::new(1, 1, 1.0)),
+            CellState::Flowable(CellData::new(1, 2, 6.3)),
+            CellState::Flowable(CellData::new(2, 0, 7.1)),
+            CellState::Flowable(CellData::new(2, 1, 7.2)),
+            CellState::Flowable(CellData::new(2, 2, 7.3)),
         ];
         Matrix::from_vec(3, 3, values).unwrap()
     }
@@ -500,10 +502,7 @@ mod tests {
         assert_eq!(1usize, raised_pits.len());
         assert_eq!(
             matrix.get((1, 1)).unwrap(),
-            &CellState::RaisedPit(CellData {
-                index: (1, 1),
-                value: OrderedFloat(5.09)
-            })
+            &CellState::RaisedPit(CellData::new(1, 1, 5.09))
         )
     }
 
@@ -526,18 +525,9 @@ mod tests {
 
     #[test]
     fn test_get_cost_to_successor_no_data() {
-        let node = CellState::Flowable(CellData {
-            index: (1, 1),
-            value: OrderedFloat(1.0),
-        });
-        let neighbor = CellState::NoData(CellData {
-            index: (2, 2),
-            value: OrderedFloat(-9999.0),
-        });
-        let raised_pit = CellState::RaisedPit(CellData {
-            index: (0, 0),
-            value: OrderedFloat(0.9),
-        });
+        let node = CellState::Flowable(CellData::new(1, 1, 1.0));
+        let neighbor = CellState::NoData(CellData::new(2, 2, -9999.0));
+        let raised_pit = CellState::RaisedPit(CellData::new(0, 0, 0.9));
         let flat_increment = OrderedFloat(0.1);
         let minimize_dist = true;
 
@@ -550,22 +540,13 @@ mod tests {
     #[test]
     fn test_get_cost_to_successor_minimize_dist() {
         let node_value = OrderedFloat(1.0);
-        let node = CellState::Flowable(CellData {
-            index: (1, 1),
-            value: node_value,
-        });
+        let node = CellState::Flowable(CellData::new(1, 1, node_value.into_inner()));
 
         let neighbor_value = OrderedFloat(2.0);
-        let neighbor = CellState::Flowable(CellData {
-            index: (2, 2),
-            value: neighbor_value,
-        });
+        let neighbor = CellState::Flowable(CellData::new(2, 2, neighbor_value.into_inner()));
 
         let raised_pit_value = OrderedFloat(0.9);
-        let raised_pit = CellState::RaisedPit(CellData {
-            index: (0, 0),
-            value: raised_pit_value,
-        });
+        let raised_pit = CellState::RaisedPit(CellData::new(0, 0, raised_pit_value.into_inner()));
 
         let flat_increment = OrderedFloat(0.1);
         let minimize_dist = true;
@@ -589,10 +570,7 @@ mod tests {
         let minimize_dist = true;
 
         let matrix = get_mock_matrix();
-        let raised_pit = CellState::RaisedPit(CellData {
-            index: (1, 1),
-            value: OrderedFloat(5.0),
-        });
+        let raised_pit = CellState::RaisedPit(CellData::new(1, 1, 5.0));
 
         let path = find_path_with_dijkstra(
             &raised_pit,
