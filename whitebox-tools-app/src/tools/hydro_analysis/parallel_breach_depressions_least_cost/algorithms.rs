@@ -7,22 +7,32 @@ use ordered_float::OrderedFloat;
 use pathfinding::prelude::{dijkstra, Matrix, MatrixFormatError};
 use std::sync::mpsc::channel;
 use threadpool::ThreadPool;
-use whitebox_raster::{Raster, RasterConfigs};
+use whitebox_raster::{DataType, Raster, RasterConfigs};
 
 pub fn parallel_breach_depressions_least_cost(args: ValidatedArgs) -> Result<()> {
     // Load the input raster into memory
+    println!("Loading input raster");
     let raster = Raster::new(args.input_file.as_str(), "r")?;
 
     // Clone the input raster config for use in constructing the output raster later
-    let configs = raster.configs.clone();
+    // Set the output datatype to 64-bit float
+    let mut configs = raster.configs.clone();
+    configs.data_type = DataType::F64;
+
+    // Calculate a small increment used to ensure positive flow through breach cells from the raster
+    // metadata
+    let flat_increment = calculate_flat_increment(&configs);
+    println!("Flat increment used: {}", flat_increment);
 
     // Convert the raster into a pathfinding::Matrix
+    println!("Converting raster to search matrix");
     let mut matrix = raster_to_matrix(raster)?;
 
     // Find all the pits and prepare them for beaching by raising their value to just
     // below the value of their lowest neighbor
     let raw_pits = get_raw_pits(&matrix);
-    let mut raised_pits = raise_pits(&mut matrix, raw_pits, args.flat_increment);
+    let mut raised_pits = raise_pits(&mut matrix, raw_pits, flat_increment);
+    println!("Number of pits found: {}", raised_pits.len());
 
     // Initialize structures used for tracking breach progress and results
     let mut in_progress: HashSet<CellData> = HashSet::new();
@@ -31,9 +41,10 @@ pub fn parallel_breach_depressions_least_cost(args: ValidatedArgs) -> Result<()>
     // paths with worker threads responsible for preforming the breach path searches
     let (sender, receiver) = channel::<Vec<(CellState, CellTransition)>>();
     let num_workers = args.num_threads - 1;
+    println!("Spawning {} worker threads", num_workers);
     let pool = ThreadPool::new(num_workers);
 
-    while !raised_pits.is_empty() && !in_progress.is_empty() {
+    while !raised_pits.is_empty() || !in_progress.is_empty() {
         // Only prepare and dispatch a search operation if the queue is empty to limit memory
         // consumption
         if pool.queued_count() < 1 {
@@ -49,12 +60,11 @@ pub fn parallel_breach_depressions_least_cost(args: ValidatedArgs) -> Result<()>
                     let path = find_path_with_dijkstra(
                         &raised_pit,
                         &search_matrix,
-                        args.flat_increment,
+                        flat_increment,
                         args.max_cost,
                         args.minimize_dist,
                     );
-                    let transitions =
-                        compute_cell_transitions(path, &raised_pit, args.flat_increment);
+                    let transitions = compute_cell_transitions(path, &raised_pit, flat_increment);
                     sender
                         .send(transitions)
                         .expect("An error occurred while sending data to the main thread.");
@@ -78,12 +88,14 @@ pub fn parallel_breach_depressions_least_cost(args: ValidatedArgs) -> Result<()>
 
     // Gather the unsolved pits and fill them if the fill depressions flag is present
     let unsolved_pits = get_unsolved_pits(&matrix);
+    println!("Number of unsolved pits: {}", unsolved_pits.len());
     if args.fill_deps && !unsolved_pits.is_empty() {
         fill_remaining_pits(&mut matrix, unsolved_pits);
     }
 
     // Write the output raster using the same configs as the input raster
     let mut output = matrix_to_raster(matrix, args.output_file.as_str(), &configs);
+    println!("Writing breached raster to output");
     output.write()?;
     Ok(())
 }
@@ -108,6 +120,17 @@ fn matrix_to_raster(matrix: Matrix<CellState>, file_name: &str, configs: &Raster
         raster.set_row_data(row as isize, values)
     }
     raster
+}
+
+/// Function adapted from logic in breach_depressions_least_cost
+fn calculate_flat_increment(configs: &RasterConfigs) -> OrderedFloat<f64> {
+    let res_x = configs.resolution_x;
+    let res_y = configs.resolution_y;
+    let diagonal_resolution = (res_x * res_x + res_y * res_y).sqrt();
+    let elev_digits = (configs.maximum as i32).to_string().len();
+    let elev_multiplier = 10.0_f64.powi((9 - elev_digits) as i32);
+    let small_num = 1.0_f64 / elev_multiplier as f64 * diagonal_resolution.ceil();
+    OrderedFloat(small_num)
 }
 
 fn get_raw_pits(matrix: &Matrix<CellState>) -> Vec<CellState> {
@@ -212,8 +235,8 @@ fn get_search_matrix(
     // Guard against going out of bounds with the row or column indices
     // The matrix.slice method does not accept RangeInclusive, so we add 1 to the max so that the
     // include_start..exclude_end results in the same sized slice as include_start..=include_end
-    let max_row = std::cmp::min(matrix.rows, row + max_dist) + 1;
-    let max_column = std::cmp::min(matrix.columns, column + max_dist) + 1;
+    let max_row = std::cmp::min(matrix.rows, row + max_dist);
+    let max_column = std::cmp::min(matrix.columns, column + max_dist);
 
     matrix
         .slice(min_row..max_row, min_column..max_column)
@@ -227,6 +250,11 @@ fn get_cost_to_successor(
     flat_increment: OrderedFloat<f64>,
     minimize_dist: bool,
 ) -> OrderedFloat<f64> {
+    /*
+     *
+     * TODO: Revisit cost calculation
+     *
+     */
     let zero_cost = OrderedFloat(0.0f64);
 
     if let CellState::NoData(_) = neighbor {
@@ -236,7 +264,7 @@ fn get_cost_to_successor(
     // Estimate the accumulated flat increment necessary to ensure flow from the pit
     // to the successor
     let node_dist_from_pit = raised_pit.distance(node);
-    let neighbor_dist_from_pit = OrderedFloat(node_dist_from_pit.ceil() + 1_f64);
+    let neighbor_dist_from_pit = node_dist_from_pit + 1_f64;
     let accumulated_flat_increment = neighbor_dist_from_pit * flat_increment;
 
     let pit_value = raised_pit.get_value();
@@ -286,14 +314,18 @@ fn dijkstra_success(
     raised_pit: &CellState,
     flat_increment: OrderedFloat<f64>,
 ) -> bool {
+    /*
+     *
+     * TODO: Revisit success calculation
+     *
+     */
     // Estimate the accumulated flat increment necessary to ensure flow from the pit
     // to the successor
     let node_dist_from_pit = raised_pit.distance(node);
-    let neighbor_dist_from_pit = OrderedFloat(node_dist_from_pit.ceil() + 1_f64);
-    let accumulated_flat_increment = neighbor_dist_from_pit * flat_increment;
-
     let pit_value = raised_pit.get_value();
-    let is_success = |value: OrderedFloat<f64>| value < (pit_value - accumulated_flat_increment);
+    let is_success = |value: OrderedFloat<f64>| -> bool {
+        value < (pit_value - node_dist_from_pit * flat_increment)
+    };
     match node {
         CellState::NoData(_) => true,
         CellState::RawPit(_) => false,
@@ -339,8 +371,20 @@ fn compute_cell_transitions(
         Some(breach) => {
             let pit_value = raised_pit.get_value();
             let mut transitions = vec![];
-            let (nodes, _) = breach;
+            let mut nodes = breach.0;
+
+            // The path contains the ending node, which should not be modified.
+            let _ = nodes.pop();
+
+            // Compute the cell transitions
             for (i, node) in nodes.iter().enumerate() {
+                // The first node is the pit. Do not modify the value.
+                if i == 0 {
+                    let transition = (node.clone(), CellTransition::Breach(node.get_value()));
+                    transitions.push(transition);
+                    continue;
+                }
+
                 let new_value = pit_value - flat_increment * i as f64;
                 let transition = (node.clone(), CellTransition::Breach(new_value));
                 transitions.push(transition);
@@ -361,18 +405,6 @@ fn apply_cell_transitions(
         ) = cell.transition(transition)?;
     }
     Ok(())
-}
-
-#[allow(unused_variables)]
-fn resolve_pits(
-    matrix: &mut Matrix<CellState>,
-    raised_pits: Vec<CellState>,
-    max_cost: OrderedFloat<f64>,
-    max_dist: isize,
-    flat_increment: OrderedFloat<f64>,
-    minimize_dist: bool,
-) -> PitResolutionTracker {
-    todo!()
 }
 
 #[allow(unused_variables)]
@@ -463,15 +495,115 @@ mod tests {
     fn test_raise_pits() {
         let mut matrix = get_mock_matrix();
         let raw_pits = get_raw_pits(&matrix);
-        let raised_pits = raise_pits(&mut matrix, raw_pits, OrderedFloat(0.1));
+        let raised_pits = raise_pits(&mut matrix, raw_pits, OrderedFloat(0.01));
 
         assert_eq!(1usize, raised_pits.len());
         assert_eq!(
             matrix.get((1, 1)).unwrap(),
             &CellState::RaisedPit(CellData {
                 index: (1, 1),
-                value: OrderedFloat(5.0)
+                value: OrderedFloat(5.09)
             })
         )
+    }
+
+    #[test]
+    fn test_get_search_matrix() {
+        let matrix = get_mock_matrix();
+        let cell = matrix.get((2, 2)).unwrap();
+        let slice = matrix.slice(1..3, 1..3).unwrap();
+
+        assert_eq!(slice, get_search_matrix(&matrix, cell, 1));
+    }
+
+    #[test]
+    fn test_get_search_matrix_stays_in_bounds() {
+        let matrix = get_mock_matrix();
+        let raised_pit = matrix.get((1, 1)).unwrap();
+
+        assert_eq!(matrix, get_search_matrix(&matrix, raised_pit, 100));
+    }
+
+    #[test]
+    fn test_get_cost_to_successor_no_data() {
+        let node = CellState::Flowable(CellData {
+            index: (1, 1),
+            value: OrderedFloat(1.0),
+        });
+        let neighbor = CellState::NoData(CellData {
+            index: (2, 2),
+            value: OrderedFloat(-9999.0),
+        });
+        let raised_pit = CellState::RaisedPit(CellData {
+            index: (0, 0),
+            value: OrderedFloat(0.9),
+        });
+        let flat_increment = OrderedFloat(0.1);
+        let minimize_dist = true;
+
+        let cost =
+            get_cost_to_successor(&node, &neighbor, &raised_pit, flat_increment, minimize_dist);
+
+        assert_eq!(cost, OrderedFloat(0.0));
+    }
+
+    #[test]
+    fn test_get_cost_to_successor_minimize_dist() {
+        let node_value = OrderedFloat(1.0);
+        let node = CellState::Flowable(CellData {
+            index: (1, 1),
+            value: node_value,
+        });
+
+        let neighbor_value = OrderedFloat(2.0);
+        let neighbor = CellState::Flowable(CellData {
+            index: (2, 2),
+            value: neighbor_value,
+        });
+
+        let raised_pit_value = OrderedFloat(0.9);
+        let raised_pit = CellState::RaisedPit(CellData {
+            index: (0, 0),
+            value: raised_pit_value,
+        });
+
+        let flat_increment = OrderedFloat(0.1);
+        let minimize_dist = true;
+
+        let cost =
+            get_cost_to_successor(&node, &neighbor, &raised_pit, flat_increment, minimize_dist);
+
+        let neighbor_distance_from_node = OrderedFloat(2.0_f64.sqrt());
+        let accumulated_flat_increment = OrderedFloat(2.0_f64.sqrt() + 1_f64) * flat_increment;
+
+        let expected_cost = neighbor_distance_from_node
+            * (neighbor_value - raised_pit_value - accumulated_flat_increment);
+
+        assert_eq!(cost, expected_cost);
+    }
+
+    #[test]
+    fn test_find_path_with_dijkstra() {
+        let max_cost = OrderedFloat(100.0);
+        let flat_increment = OrderedFloat(0.1);
+        let minimize_dist = true;
+
+        let matrix = get_mock_matrix();
+        let raised_pit = CellState::RaisedPit(CellData {
+            index: (1, 1),
+            value: OrderedFloat(5.0),
+        });
+
+        let path = find_path_with_dijkstra(
+            &raised_pit,
+            &matrix,
+            flat_increment,
+            max_cost,
+            minimize_dist,
+        )
+        .unwrap();
+        let (nodes, _) = path;
+
+        assert_eq!(nodes.len(), 3);
     }
 }

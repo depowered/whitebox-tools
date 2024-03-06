@@ -2,9 +2,10 @@
 mod algorithms;
 #[allow(dead_code)]
 mod structures;
+use self::algorithms::parallel_breach_depressions_least_cost;
 use crate::tools::*;
 use ordered_float::OrderedFloat;
-use std::io::Error;
+use std::io::{Error, ErrorKind};
 use std::path::PathBuf;
 
 pub struct ParallelBreachDepressionsLeastCost {
@@ -153,14 +154,18 @@ impl WhiteboxTool for ParallelBreachDepressionsLeastCost {
         working_directory: &'a str,
         verbose: bool,
     ) -> Result<(), Error> {
-        println!("Running ParallelBreachDepressionsLeastCost...");
         let parsed_args = parse_args(args)?;
-        let validated_args = validate_args(parsed_args)?;
+        let validated_args = validate_args(parsed_args, working_directory)?;
         println!("Validated arguments:");
-        dbg!(validated_args);
+        dbg!(validated_args.clone());
         println!("working directory: {}", working_directory);
         println!("verbose: {}", verbose);
-        Ok(())
+
+        println!("Running ParallelBreachDepressionsLeastCost...");
+        match parallel_breach_depressions_least_cost(validated_args) {
+            Ok(_) => Ok(()),
+            Err(error) => Err(Error::new(ErrorKind::Other, error)),
+        }
     }
 }
 
@@ -171,7 +176,6 @@ struct ParsedArgs {
     max_cost: f64,
     max_dist: isize,
     flat_increment: f64,
-    num_threads: isize,
     fill_deps: bool,
     minimize_dist: bool,
 }
@@ -183,8 +187,7 @@ impl Default for ParsedArgs {
             output_file: "".to_string(),
             max_dist: 20isize,
             max_cost: f64::INFINITY,
-            flat_increment: 1.0_e-10f64,
-            num_threads: -1,
+            flat_increment: 1.0 * 10.0_f64.powi(-10),
             fill_deps: false,
             minimize_dist: false,
         }
@@ -259,19 +262,6 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, Error> {
                     _ => return Err(Error::new(ErrorKind::InvalidInput, missing_value_msg)),
                 }
             }
-            "--num_threads" => {
-                let next_value = args_iterator.next();
-                match next_value {
-                    Some(next_value) => {
-                        let parsed_int = next_value.parse::<isize>().expect(
-                            format!("Expected an integer for max_dist, found '{}'", next_value)
-                                .as_str(),
-                        );
-                        parsed_args.num_threads = parsed_int;
-                    }
-                    _ => return Err(Error::new(ErrorKind::InvalidInput, missing_value_msg)),
-                }
-            }
             "--fill" => parsed_args.fill_deps = true,
             "--min_dist" => parsed_args.minimize_dist = true,
             _ => {
@@ -285,31 +275,47 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, Error> {
     Ok(parsed_args)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ValidatedArgs {
     input_file: String,
     output_file: String,
     max_cost: OrderedFloat<f64>,
     max_dist: usize,
     flat_increment: OrderedFloat<f64>,
-    num_threads: usize,
     fill_deps: bool,
     minimize_dist: bool,
+    num_threads: usize,
 }
 
-fn validate_args(parsed_args: ParsedArgs) -> Result<ValidatedArgs, Error> {
-    let input_file_path = PathBuf::from(parsed_args.input_file.clone());
-    if !input_file_path.exists() {
-        panic!("Input file does not exist")
+fn validate_args(parsed_args: ParsedArgs, working_directory: &str) -> Result<ValidatedArgs, Error> {
+    let input_file =
+        if parsed_args.input_file.contains("/") || parsed_args.input_file.contains("\\") {
+            PathBuf::from(parsed_args.input_file)
+        } else {
+            PathBuf::from(working_directory).join(PathBuf::from(parsed_args.input_file))
+        };
+
+    if !input_file.exists() {
+        panic!(
+            "Input file does not exist at {}",
+            input_file.to_str().unwrap()
+        )
     }
-    let output_file_path = PathBuf::from(parsed_args.output_file.clone());
-    match output_file_path.parent() {
+
+    let output_file =
+        if parsed_args.output_file.contains("/") || parsed_args.output_file.contains("\\") {
+            PathBuf::from(parsed_args.output_file)
+        } else {
+            PathBuf::from(working_directory).join(PathBuf::from(parsed_args.output_file))
+        };
+
+    match output_file.parent() {
         Some(dir) => {
             if !dir.exists() {
-                panic!("Output file directory does not exists")
+                panic!("Output file directory does not exist")
             }
         }
-        None => panic!("Output file directory does not exists"),
+        None => panic!("Output file directory does not exist"),
     }
     if !(parsed_args.max_cost > 0f64) {
         panic!("max_cost must be greater than zero")
@@ -322,21 +328,22 @@ fn validate_args(parsed_args: ParsedArgs) -> Result<ValidatedArgs, Error> {
     }
 
     // Calculate the number of available threads
-    let num_threads = match parsed_args.num_threads {
+    let max_procs = whitebox_common::configs::get_configs()?.max_procs;
+    let num_threads = match max_procs {
         isize::MIN..=-1 => num_cpus::get(),
         0..=1 => panic!("num_threads must be at least 2"),
-        _ => std::cmp::min(parsed_args.num_threads as usize, num_cpus::get()),
+        _ => std::cmp::min(max_procs as usize, num_cpus::get()),
     };
 
     let validated_args = ValidatedArgs {
-        input_file: parsed_args.input_file,
-        output_file: parsed_args.output_file,
+        input_file: String::from(input_file.to_str().unwrap()),
+        output_file: String::from(output_file.to_str().unwrap()),
         max_cost: OrderedFloat(parsed_args.max_cost),
         max_dist: parsed_args.max_dist as usize,
         flat_increment: OrderedFloat(parsed_args.flat_increment),
-        num_threads: num_threads,
         fill_deps: parsed_args.fill_deps,
         minimize_dist: parsed_args.minimize_dist,
+        num_threads: num_threads,
     };
     Ok(validated_args)
 }

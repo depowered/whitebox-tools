@@ -21,7 +21,8 @@ impl CellData {
     pub fn distance(self: &Self, other: &CellData) -> OrderedFloat<f64> {
         let (row1, column1) = self.index;
         let (row2, column2) = other.index;
-        let square_dist = ((row2 - row1).pow(2) + (column2 - column1).pow(2)) as f64;
+        let square_dist = ((row2 as isize - row1 as isize).pow(2)
+            + (column2 as isize - column1 as isize).pow(2)) as f64;
         OrderedFloat(square_dist.sqrt())
     }
 }
@@ -41,6 +42,7 @@ pub enum CellState {
     UnsolvedPit(CellData),
 }
 
+#[derive(Debug)]
 pub enum CellTransition {
     RaisePit(OrderedFloat<f64>),
     Breach(OrderedFloat<f64>),
@@ -98,20 +100,24 @@ impl CellState {
 
     pub fn transition(self: Self, transition: CellTransition) -> Result<CellState> {
         match (self, transition) {
-            // There are no valid transitions starting from NoData
-            (CellState::NoData(_), _) => Err(anyhow!("NoData is immutable")),
+            // NoData is immutable; return the same state and data
+            (CellState::NoData(data), _) => Ok(CellState::NoData(data)),
 
             // The only valid transition starting from Flowable is Breach
             (CellState::Flowable(data), CellTransition::Breach(new_value)) => {
                 Ok(CellState::Flowable(data.with_new_value(new_value)))
             }
-            (CellState::Flowable(_), _) => Err(anyhow!("Error")),
+            (CellState::Flowable(_), transition) => {
+                Err(anyhow!("Valid transitions from Flowable is Breach. Received transition: {:?}", transition))
+            },
 
             // The only valid transition starting from RawPit is RaisePit
             (CellState::RawPit(data), CellTransition::RaisePit(new_value)) => {
                 Ok(CellState::RaisedPit(data.with_new_value(new_value)))
             }
-            (CellState::RawPit(_), _) => Err(anyhow!("Error")),
+            (CellState::RawPit(_), transition) => {
+                Err(anyhow!("Valid transitions from RawPit is RaisePit. Received transition: {:?}", transition))
+            },
 
             // The only valid transitions starting from RaisedPit are Breach and MarkUnsolved
             (CellState::RaisedPit(data), CellTransition::Breach(new_value)) => {
@@ -120,10 +126,14 @@ impl CellState {
             (CellState::RaisedPit(data), CellTransition::MarkUnsolved) => {
                 Ok(CellState::UnsolvedPit(data))
             }
-            (CellState::RaisedPit(_), _) => Err(anyhow!("Error")),
+            (CellState::RaisedPit(_), transition) => {
+                Err(anyhow!("Valid transitions from RaisedPit are Breach and MarkUnsolved. Received transition: {:?}", transition))
+            },
 
             // There are no valid transitions starting from NoData
-            (CellState::UnsolvedPit(_), _) => Err(anyhow!("Error")),
+            (CellState::UnsolvedPit(_), transition) => {
+                Err(anyhow!("There are no valid transitions from UnsolvedPit. Received transition: {:?}", transition))
+            },
         }
     }
 
@@ -146,10 +156,7 @@ impl CellState {
     }
 
     pub fn distance(self: &Self, other: &CellState) -> OrderedFloat<f64> {
-        let (row1, column1) = self.get_data().index;
-        let (row2, column2) = other.get_data().index;
-        let square_dist = ((row2 - row1).pow(2) + (column2 - column1).pow(2)) as f64;
-        OrderedFloat(square_dist.sqrt())
+        self.get_data().distance(other.get_data())
     }
 }
 
@@ -283,10 +290,11 @@ mod tests {
     #[test]
     fn no_data_is_immutable() {
         let state = CellState::new(InitialState::NoData, (1, 1), OrderedFloat(-9999.0));
-        let new_state = state.transition(CellTransition::Breach(OrderedFloat(100.0)));
-        if let Ok(_) = new_state {
-            panic!("Unreachable")
-        }
+        let new_state = state
+            .clone()
+            .transition(CellTransition::Breach(OrderedFloat(100.0)))
+            .unwrap();
+        assert_eq!(state, new_state);
     }
 
     #[test]
