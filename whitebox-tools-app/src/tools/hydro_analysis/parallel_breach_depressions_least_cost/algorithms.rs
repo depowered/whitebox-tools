@@ -9,7 +9,7 @@ use std::sync::mpsc::channel;
 use threadpool::ThreadPool;
 use whitebox_raster::{DataType, Raster, RasterConfigs};
 
-const MATRIX_OFFSET: isize = 0;
+const MATRIX_OFFSET: usize = 1;
 
 pub fn parallel_breach_depressions_least_cost(args: ValidatedArgs) -> Result<()> {
     // Load the input raster into memory
@@ -28,7 +28,7 @@ pub fn parallel_breach_depressions_least_cost(args: ValidatedArgs) -> Result<()>
 
     // Convert the raster into a pathfinding::Matrix
     println!("Converting raster to search matrix");
-    let mut matrix = raster_to_matrix(raster)?;
+    let mut matrix = raster_to_matrix(raster, MATRIX_OFFSET)?;
 
     // Find all the pits and prepare them for beaching by raising their value to just
     // below the value of their lowest neighbor
@@ -96,23 +96,42 @@ pub fn parallel_breach_depressions_least_cost(args: ValidatedArgs) -> Result<()>
     }
 
     // Write the output raster using the same configs as the input raster
-    let mut output = matrix_to_raster(matrix, args.output_file.as_str(), &configs);
+    let mut output = matrix_to_raster(matrix, MATRIX_OFFSET, args.output_file.as_str(), &configs);
     println!("Writing breached raster to output");
     output.write()?;
     Ok(())
 }
 
-fn raster_to_matrix(raster: Raster) -> Result<Matrix<CellState>, MatrixFormatError> {
+fn raster_to_matrix(raster: Raster, offset: usize) -> Result<Matrix<CellState>, MatrixFormatError> {
+    let row_min = 0_isize - offset as isize;
+    let row_max = raster.configs.rows as isize + offset as isize;
+
+    let column_min = 0_isize - offset as isize;
+    let column_max = raster.configs.columns as isize + offset as isize;
+
     let mut values: Vec<CellState> = vec![];
-    for row in 0..raster.configs.rows as isize {
-        for column in 0..raster.configs.columns as isize {
+    for row in row_min..row_max {
+        for column in column_min..column_max {
             values.push(CellState::from_raster(&raster, row, column))
         }
     }
-    Matrix::from_vec(raster.configs.rows, raster.configs.columns, values)
+    Matrix::from_vec(
+        raster.configs.rows + 2 * offset,
+        raster.configs.columns + 2 * offset,
+        values,
+    )
 }
 
-fn matrix_to_raster(matrix: Matrix<CellState>, file_name: &str, configs: &RasterConfigs) -> Raster {
+fn matrix_to_raster(
+    matrix: Matrix<CellState>,
+    offset: usize,
+    file_name: &str,
+    configs: &RasterConfigs,
+) -> Raster {
+    let slice_rows = (0 + offset)..(matrix.rows - offset);
+    let slice_columns = (0 + offset)..(matrix.columns - offset);
+    let matrix = matrix.slice(slice_rows, slice_columns).unwrap();
+
     let mut raster = Raster::initialize_using_config(file_name, configs);
     for (row, states) in matrix.iter().enumerate() {
         let values: Vec<f64> = states
@@ -174,11 +193,8 @@ fn raise_pits(
             .min()
             .unwrap();
 
-        let raised_pit = raw_pit
-            .transition(CellTransition::RaisePit(
-                min_neighbor_value - flat_increment,
-            ))
-            .unwrap();
+        let transition = CellTransition::RaisePit(min_neighbor_value - flat_increment);
+        let raised_pit = raw_pit.transition(transition).unwrap();
 
         *matrix.get_mut(index).unwrap() = raised_pit.clone();
         raised_pits.push(raised_pit);
@@ -424,6 +440,7 @@ mod tests {
         let configs: RasterConfigs = RasterConfigs {
             rows: 3,
             columns: 3,
+            nodata: -9999.0,
             ..Default::default()
         };
         let mut raster = Raster::initialize_using_config("test.tif", &configs);
@@ -435,26 +452,61 @@ mod tests {
     }
 
     fn get_mock_matrix() -> Matrix<CellState> {
-        let values = vec![
-            CellState::Flowable(CellData::new(0, 0, 5.1)),
-            CellState::Flowable(CellData::new(0, 1, 5.2)),
-            CellState::Flowable(CellData::new(0, 2, 5.3)),
-            CellState::Flowable(CellData::new(1, 0, 6.1)),
-            CellState::RawPit(CellData::new(1, 1, 1.0)),
-            CellState::Flowable(CellData::new(1, 2, 6.3)),
-            CellState::Flowable(CellData::new(2, 0, 7.1)),
-            CellState::Flowable(CellData::new(2, 1, 7.2)),
-            CellState::Flowable(CellData::new(2, 2, 7.3)),
-        ];
-        Matrix::from_vec(3, 3, values).unwrap()
+        let mut values = vec![];
+        // raster row -1, matrix row 0
+        let row = -1;
+        values.append(&mut vec![
+            CellState::NoData(CellData::new(row, -1, -9999.0)),
+            CellState::NoData(CellData::new(row, 0, -9999.0)),
+            CellState::NoData(CellData::new(row, 1, -9999.0)),
+            CellState::NoData(CellData::new(row, 2, -9999.0)),
+            CellState::NoData(CellData::new(row, 3, -9999.0)),
+        ]);
+        // raster row 0, matrix row 1
+        let row = 0;
+        values.append(&mut vec![
+            CellState::NoData(CellData::new(row, -1, -9999.0)),
+            CellState::Flowable(CellData::new(row, 0, 5.1)),
+            CellState::Flowable(CellData::new(row, 1, 5.2)),
+            CellState::Flowable(CellData::new(row, 2, 5.3)),
+            CellState::NoData(CellData::new(row, 3, -9999.0)),
+        ]);
+        // raster row 1, matrix row 2
+        let row = 1;
+        values.append(&mut vec![
+            CellState::NoData(CellData::new(row, -1, -9999.0)),
+            CellState::Flowable(CellData::new(row, 0, 6.1)),
+            CellState::RawPit(CellData::new(row, 1, 1.0)),
+            CellState::Flowable(CellData::new(row, 2, 6.3)),
+            CellState::NoData(CellData::new(row, 3, -9999.0)),
+        ]);
+        // raster row 2, matrix row 3
+        let row = 2;
+        values.append(&mut vec![
+            CellState::NoData(CellData::new(row, -1, -9999.0)),
+            CellState::Flowable(CellData::new(row, 0, 7.1)),
+            CellState::Flowable(CellData::new(row, 1, 7.2)),
+            CellState::Flowable(CellData::new(row, 2, 7.3)),
+            CellState::NoData(CellData::new(row, 3, -9999.0)),
+        ]);
+        // raster row 3, matrix row 4
+        let row = 3;
+        values.append(&mut vec![
+            CellState::NoData(CellData::new(row, -1, -9999.0)),
+            CellState::NoData(CellData::new(row, 0, -9999.0)),
+            CellState::NoData(CellData::new(row, 1, -9999.0)),
+            CellState::NoData(CellData::new(row, 2, -9999.0)),
+            CellState::NoData(CellData::new(row, 3, -9999.0)),
+        ]);
+        Matrix::from_vec(5, 5, values).unwrap()
     }
 
     #[test]
     fn test_raster_to_matrix() {
-        let input = get_mock_raster();
-        let expected = get_mock_matrix();
+        let raster = get_mock_raster();
+        let matrix = get_mock_matrix();
 
-        assert_eq!(raster_to_matrix(input).unwrap(), expected);
+        assert_eq!(raster_to_matrix(raster, 1).unwrap(), matrix);
     }
 
     #[test]
@@ -462,26 +514,11 @@ mod tests {
         let input = get_mock_matrix();
         let expected = get_mock_raster();
 
-        let result = matrix_to_raster(input, "test.tif", &expected.configs);
+        let result = matrix_to_raster(input, 1, "test.tif", &expected.configs);
 
         assert_eq!(result.get_row_data(0), expected.get_row_data(0));
         assert_eq!(result.get_row_data(1), expected.get_row_data(1));
         assert_eq!(result.get_row_data(2), expected.get_row_data(2));
-    }
-
-    #[test]
-    fn test_indexes_match() {
-        let raster = get_mock_raster();
-        let matrix = get_mock_matrix();
-
-        assert_eq!(
-            OrderedFloat(raster.get_value(0, 1)),
-            matrix.get((0, 1)).unwrap().get_value()
-        );
-        assert_eq!(
-            OrderedFloat(raster.get_value(2, 1)),
-            matrix.get((2, 1)).unwrap().get_value()
-        );
     }
 
     #[test]
@@ -490,7 +527,7 @@ mod tests {
         let pits = get_raw_pits(&matrix);
 
         assert_eq!(1usize, pits.len());
-        assert_eq!(matrix.get((1, 1)).unwrap(), &pits[0])
+        assert_eq!(matrix.get((2, 2)).unwrap(), &pits[0])
     }
 
     #[test]
@@ -501,7 +538,7 @@ mod tests {
 
         assert_eq!(1usize, raised_pits.len());
         assert_eq!(
-            matrix.get((1, 1)).unwrap(),
+            matrix.get((2, 2)).unwrap(),
             &CellState::RaisedPit(CellData::new(1, 1, 5.09))
         )
     }
@@ -583,5 +620,11 @@ mod tests {
         let (nodes, _) = path;
 
         assert_eq!(nodes.len(), 3);
+        // Starts with the pit
+        assert_eq!(nodes[0], raised_pit);
+        // Goes to the neighbor with the lowest elevation
+        assert_eq!(nodes[1], CellState::Flowable(CellData::new(0, 0, 5.1)));
+        // Ends with a NoData cell
+        assert!(matches!(nodes[2], CellState::NoData(..)));
     }
 }

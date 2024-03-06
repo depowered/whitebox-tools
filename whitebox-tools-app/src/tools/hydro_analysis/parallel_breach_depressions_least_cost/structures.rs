@@ -30,9 +30,9 @@ impl CellData {
         }
     }
 
-    pub fn get_matrix_index(self: &Self, offset: isize) -> (usize, usize) {
-        let matrix_row = (self.row + offset) as usize;
-        let matrix_column = (self.column + offset) as usize;
+    pub fn get_matrix_index(self: &Self, offset: usize) -> (usize, usize) {
+        let matrix_row = (self.row + offset as isize) as usize;
+        let matrix_column = (self.column + offset as isize) as usize;
         (matrix_row, matrix_column)
     }
 
@@ -148,7 +148,7 @@ impl CellState {
         self.get_data().value
     }
 
-    pub fn get_matrix_index(self: &Self, offset: isize) -> (usize, usize) {
+    pub fn get_matrix_index(self: &Self, offset: usize) -> (usize, usize) {
         self.get_data().get_matrix_index(offset)
     }
 
