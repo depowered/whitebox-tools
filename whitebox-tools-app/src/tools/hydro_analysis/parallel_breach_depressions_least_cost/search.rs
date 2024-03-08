@@ -19,20 +19,35 @@ fn least_cost_search(
     /* Vec is a stack and so if we want to pop the values from lowest to highest, we need to sort
     them from highest to lowest. */
     undefined_flow_cells.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(Equal));
+    let mut undefined_flow_cells2 = vec![];
 
     let mut num_solved: usize = 0;
     let mut num_unsolved: usize = 0;
     while let Some(cell) = undefined_flow_cells.pop() {
-        try_breach(
+        let path = try_breach(
             cell,
             &mut output,
-            &mut num_solved,
-            &mut num_unsolved,
             max_cost,
             small_num,
             minimize_dist,
             max_dist,
         );
+
+        match path {
+            Some(cells) => {
+                num_solved += 1;
+                if cells.len() > 0 {
+                    for cell in cells {
+                        let (r, c, z) = cell;
+                        output.set_value(r, c, z);
+                    }
+                }
+            }
+            None => {
+                undefined_flow_cells2.push(cell); // Add it to the list for the next iteration
+                num_unsolved += 1;
+            }
+        }
     }
     Ok((num_solved, num_unsolved))
 }
@@ -40,13 +55,11 @@ fn least_cost_search(
 fn try_breach(
     cell: (isize, isize, f64),
     output: &mut Raster,
-    num_solved: &mut usize,
-    num_unsolved: &mut usize,
     max_cost: f64,
     small_num: f64,
     minimize_dist: bool,
     max_dist: isize,
-) {
+) -> Option<Vec<(isize, isize, f64)>> {
     let rows = output.configs.rows as isize;
     let columns = output.configs.columns as isize;
     let nodata = output.configs.nodata;
@@ -70,7 +83,7 @@ fn try_breach(
         Array2D::new(rows, columns, 0, -1).expect("Error constructing path_lenght Array2D");
     let mut scanned_cells = vec![];
 
-    let mut undefined_flow_cells2 = vec![];
+    // let mut undefined_flow_cells2 = vec![];
 
     let row = cell.0;
     let col = cell.1;
@@ -83,9 +96,8 @@ fn try_breach(
         if zn < z && zn != nodata {
             // It has a lower non-nodata cell
             // Resolving some other pit cell resulted in a solution for this one.
-            *num_solved += 1;
-            flag = false;
-            break;
+            let empty: Vec<(isize, isize, f64)> = vec![];
+            return Some(empty);
         }
     }
     if flag {
@@ -106,10 +118,7 @@ fn try_breach(
             let accum = cell2.priority;
             if accum > max_cost {
                 // There isn't a breach channel cheap enough
-                undefined_flow_cells2.push((row, col, z)); // Add it to the list for the filling step
-                *num_unsolved += 1;
-                flag = false;
-                break;
+                return None;
             }
             let mut length = path_length.get_value(cell2.row, cell2.column);
             let mut zn = output.get_value(cell2.row, cell2.column);
@@ -142,6 +151,7 @@ fn try_breach(
                         }
                     } else if zn <= zout || zn == nodata {
                         // We're at a cell that we can breach to
+                        let mut breach_path = vec![];
                         while flag {
                             // Find which cell to go to from here
                             if backlink.get_value(rn, cn) > -1i8 {
@@ -152,26 +162,20 @@ fn try_breach(
                                 length = path_length.get_value(rn, cn);
                                 zout = z - (length as f64 * small_num);
                                 if zn > zout {
-                                    output.set_value(rn, cn, zout);
+                                    // output.set_value(rn, cn, zout);
+                                    breach_path.push((rn, cn, zout));
                                 }
                             } else {
                                 flag = false;
                             }
                         }
-                        *num_solved += 1;
-                        flag = false;
-                        break; // don't check any more neighbours.
+                        return Some(breach_path);
                     }
                 }
             }
         }
-
-        if flag {
-            // Didn't find any lower cells.
-            undefined_flow_cells2.push((row, col, z)); // Add it to the list for the next iteration
-            *num_unsolved += 1;
-        }
     }
+    return None;
 }
 
 #[derive(PartialEq, Debug)]
