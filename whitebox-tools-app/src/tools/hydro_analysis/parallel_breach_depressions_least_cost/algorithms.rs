@@ -118,7 +118,10 @@ pub fn parallel_breach_depressions_least_cost(args: ValidatedArgs) -> Result<()>
     Ok(())
 }
 
-fn raster_to_matrix(raster: Raster, offset: usize) -> Result<Matrix<CellState>, MatrixFormatError> {
+pub fn raster_to_matrix(
+    raster: Raster,
+    offset: usize,
+) -> Result<Matrix<CellState>, MatrixFormatError> {
     let row_min = 0_isize - offset as isize;
     let row_max = raster.configs.rows as isize + offset as isize;
 
@@ -160,7 +163,7 @@ fn matrix_to_raster(
 }
 
 /// Function adapted from logic in breach_depressions_least_cost
-fn calculate_flat_increment(configs: &RasterConfigs) -> OrderedFloat<f64> {
+pub fn calculate_flat_increment(configs: &RasterConfigs) -> OrderedFloat<f64> {
     let res_x = configs.resolution_x;
     let res_y = configs.resolution_y;
     let diagonal_resolution = (res_x * res_x + res_y * res_y).sqrt();
@@ -170,7 +173,7 @@ fn calculate_flat_increment(configs: &RasterConfigs) -> OrderedFloat<f64> {
     OrderedFloat(small_num)
 }
 
-fn get_raw_pits(matrix: &Matrix<CellState>) -> Vec<CellState> {
+pub fn get_raw_pits(matrix: &Matrix<CellState>) -> Vec<CellState> {
     matrix
         .values()
         .filter(|state| matches!(**state, CellState::RawPit(_)))
@@ -194,7 +197,7 @@ fn get_neighbor_states(matrix: &Matrix<CellState>, index: (usize, usize)) -> Vec
         .collect()
 }
 
-fn raise_pits(
+pub fn raise_pits(
     matrix: &mut Matrix<CellState>,
     raw_pits: Vec<CellState>,
     flat_increment: OrderedFloat<f64>,

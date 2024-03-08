@@ -4,9 +4,9 @@ use whitebox_raster::Raster;
 
 #[derive(Debug, Eq, PartialEq, Clone, Hash)]
 pub struct CellData {
-    row: isize,
-    column: isize,
-    value: OrderedFloat<f64>,
+    pub row: isize,
+    pub column: isize,
+    pub value: OrderedFloat<f64>,
 }
 
 impl CellData {
