@@ -36,6 +36,22 @@ pub fn parallel_breach_depressions_least_cost(args: ValidatedArgs) -> Result<()>
     let mut raised_pits = raise_pits(&mut matrix, raw_pits, flat_increment);
     println!("Number of pits found: {}", raised_pits.len());
 
+    /*
+    // Serial Version
+    for raised_pit in raised_pits {
+        let search_matrix = get_search_matrix(&matrix, &raised_pit, args.max_dist);
+        let path = find_path_with_dijkstra(
+            &raised_pit,
+            &search_matrix,
+            flat_increment,
+            args.max_cost,
+            args.minimize_dist,
+        );
+        let transitions = compute_cell_transitions(path, &raised_pit, flat_increment);
+        apply_cell_transitions(&mut matrix, transitions)?;
+    }
+    */
+
     // Initialize structures used for tracking breach progress and results
     let mut in_progress: HashSet<CellData> = HashSet::new();
 
@@ -346,7 +362,7 @@ fn dijkstra_success(
     };
     match node {
         CellState::NoData(_) => true,
-        CellState::RawPit(_) => false,
+        CellState::RawPit(_) => panic!("No raw pits should still exist"),
         CellState::Flowable(data) => is_success(data.get_value()),
         CellState::RaisedPit(data) => is_success(data.get_value()),
         CellState::UnsolvedPit(data) => is_success(data.get_value()),
@@ -555,9 +571,21 @@ mod tests {
     #[test]
     fn test_get_search_matrix_stays_in_bounds() {
         let matrix = get_mock_matrix();
-        let raised_pit = matrix.get((1, 1)).unwrap();
+        let raised_pit = matrix.get((2, 2)).unwrap();
 
         assert_eq!(matrix, get_search_matrix(&matrix, raised_pit, 100));
+    }
+
+    #[test]
+    fn test_get_search_matrix_max_dist() {
+        let matrix = Matrix::new_square(100, CellState::NoData(CellData::new(1, 1, 1.0)));
+        let cell = CellState::NoData(CellData::new(50, 50, 1.0));
+        let slice = matrix
+            .slice((51 - 5)..(51 + 5), (51 - 5)..(51 + 5))
+            .unwrap();
+        let search_matrix = get_search_matrix(&matrix, &cell, 5);
+
+        assert_eq!(slice, search_matrix);
     }
 
     #[test]

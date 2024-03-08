@@ -250,8 +250,10 @@ mod tests {
         let state = CellState::RawPit(CellData::new(1, 1, 20.2));
         let other = CellState::Flowable(CellData::new(2, 2, 42.1));
         assert_eq!(state.distance(&other), OrderedFloat(2.0f64.sqrt()));
+        assert_eq!(other.distance(&state), OrderedFloat(2.0f64.sqrt()));
 
         let other = CellState::Flowable(CellData::new(4, 5, 42.1));
         assert_eq!(state.distance(&other), OrderedFloat(5.0f64));
+        assert_eq!(other.distance(&state), OrderedFloat(5.0f64));
     }
 }
