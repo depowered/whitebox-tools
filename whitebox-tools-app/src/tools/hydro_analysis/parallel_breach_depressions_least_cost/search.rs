@@ -23,19 +23,20 @@ fn least_cost_search(
     let mut num_solved: usize = 0;
     let mut num_unsolved: usize = 0;
     while let Some(cell) = undefined_flow_cells.pop() {
-        let path = try_breach(cell, raster, max_cost, small_num, minimize_dist, max_dist);
+        let outcome = try_breach(cell, raster, max_cost, small_num, minimize_dist, max_dist);
 
-        match path {
-            Some(cells) => {
+        match outcome {
+            BreachOutcome::PreviouslyBreached => num_solved += 1,
+            BreachOutcome::PathFound(path) => {
                 num_solved += 1;
-                if cells.len() > 0 {
-                    for cell in cells {
+                if path.len() > 0 {
+                    for cell in path {
                         let (r, c, z) = cell;
                         raster.set_value(r, c, z);
                     }
                 }
             }
-            None => {
+            BreachOutcome::NoPathFound => {
                 undefined_flow_cells2.push(cell); // Add it to the list for the next iteration
                 num_unsolved += 1;
             }
@@ -51,7 +52,7 @@ fn try_breach(
     small_num: f64,
     minimize_dist: bool,
     max_dist: isize,
-) -> Option<Vec<(isize, isize, f64)>> {
+) -> BreachOutcome {
     let rows = output.configs.rows as isize;
     let columns = output.configs.columns as isize;
     let nodata = output.configs.nodata;
@@ -88,8 +89,7 @@ fn try_breach(
         if zn < z && zn != nodata {
             // It has a lower non-nodata cell
             // Resolving some other pit cell resulted in a solution for this one.
-            let empty: Vec<(isize, isize, f64)> = vec![];
-            return Some(empty);
+            return BreachOutcome::PreviouslyBreached;
         }
     }
     if flag {
@@ -110,7 +110,7 @@ fn try_breach(
             let accum = cell2.priority;
             if accum > max_cost {
                 // There isn't a breach channel cheap enough
-                return None;
+                return BreachOutcome::NoPathFound;
             }
             let mut length = path_length.get_value(cell2.row, cell2.column);
             let mut zn = output.get_value(cell2.row, cell2.column);
@@ -143,7 +143,7 @@ fn try_breach(
                         }
                     } else if zn <= zout || zn == nodata {
                         // We're at a cell that we can breach to
-                        let mut breach_path = vec![];
+                        let mut path = vec![];
                         while flag {
                             // Find which cell to go to from here
                             if backlink.get_value(rn, cn) > -1i8 {
@@ -155,19 +155,25 @@ fn try_breach(
                                 zout = z - (length as f64 * small_num);
                                 if zn > zout {
                                     // output.set_value(rn, cn, zout);
-                                    breach_path.push((rn, cn, zout));
+                                    path.push((rn, cn, zout));
                                 }
                             } else {
                                 flag = false;
                             }
                         }
-                        return Some(breach_path);
+                        return BreachOutcome::PathFound(path);
                     }
                 }
             }
         }
     }
-    return None;
+    return BreachOutcome::NoPathFound;
+}
+
+enum BreachOutcome {
+    PreviouslyBreached,
+    NoPathFound,
+    PathFound(Vec<(isize, isize, f64)>),
 }
 
 #[derive(PartialEq, Debug)]
