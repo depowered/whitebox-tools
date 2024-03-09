@@ -7,13 +7,12 @@ use whitebox_raster::Raster;
 
 fn least_cost_search(
     undefined_flow_cells: &mut Vec<(isize, isize, f64)>,
-    raster: Raster,
+    raster: &mut Raster,
     max_dist: isize,
     max_cost: f64,
     flat_increment: f64,
     minimize_dist: bool,
 ) -> Result<(usize, usize)> {
-    let mut output = raster;
     let small_num = flat_increment;
 
     /* Vec is a stack and so if we want to pop the values from lowest to highest, we need to sort
@@ -24,14 +23,7 @@ fn least_cost_search(
     let mut num_solved: usize = 0;
     let mut num_unsolved: usize = 0;
     while let Some(cell) = undefined_flow_cells.pop() {
-        let path = try_breach(
-            cell,
-            &mut output,
-            max_cost,
-            small_num,
-            minimize_dist,
-            max_dist,
-        );
+        let path = try_breach(cell, raster, max_cost, small_num, minimize_dist, max_dist);
 
         match path {
             Some(cells) => {
@@ -39,7 +31,7 @@ fn least_cost_search(
                 if cells.len() > 0 {
                     for cell in cells {
                         let (r, c, z) = cell;
-                        output.set_value(r, c, z);
+                        raster.set_value(r, c, z);
                     }
                 }
             }
@@ -215,6 +207,15 @@ mod tests {
         raster
     }
 
+    fn write_raster(raster: &mut Raster) {
+        const OUTPUT: &str = "/Users/dpower-mac/Downloads/test_least_cost_search.tif";
+        let mut configs = raster.configs.clone();
+        configs.data_type = whitebox_raster::DataType::F64;
+        let array = raster.get_data_as_array2d();
+        let mut output = Raster::initialize_from_array2d(OUTPUT, &configs, &array);
+        let _ = output.write();
+    }
+
     fn gather_pits() -> Vec<(isize, isize, f64)> {
         // Load the input raster into memory
         let raster = load_raster();
@@ -255,13 +256,15 @@ mod tests {
 
         let (num_solved, num_unsolved) = least_cost_search(
             &mut undefined_flow_cells,
-            raster,
+            &mut raster,
             max_dist,
             max_cost,
             flat_increment,
             minimize_dist,
         )
         .unwrap();
+
+        write_raster(&mut raster);
 
         assert_eq!(num_solved, 15625);
         assert_eq!(num_unsolved, 7);
