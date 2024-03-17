@@ -1,6 +1,5 @@
 #[allow(dead_code)]
 mod algorithms;
-mod search;
 #[allow(dead_code)]
 mod structures;
 use self::algorithms::parallel_breach_depressions_least_cost;

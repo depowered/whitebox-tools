@@ -1,9 +1,75 @@
 use anyhow::Result;
 use std::collections::BinaryHeap;
 
-use std::cmp::Ordering::{self, Equal};
+use std::cmp::Ordering;
+use std::cmp::Ordering::Equal;
+use std::sync::{mpsc, Arc};
+use std::thread;
 use whitebox_common::structures::Array2D;
 use whitebox_raster::{Raster, RasterConfigs};
+
+fn raise_pits(
+    input: Arc<Raster>,
+    output: &mut Raster,
+    num_procs: isize,
+    small_num: f64,
+) -> Vec<(isize, isize, f64)> {
+    let rows = input.configs.rows as isize;
+    let columns = input.configs.columns as isize;
+    let nodata = input.configs.nodata;
+    // Raise pit cells to minimize the depth of breach channels.
+    let (tx, rx) = mpsc::channel();
+    for tid in 0..num_procs {
+        let input = input.clone();
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let (mut z, mut zn, mut min_zn): (f64, f64, f64);
+            let mut flag: bool;
+            let dx = [1, 1, 1, 0, -1, -1, -1, 0];
+            let dy = [-1, 0, 1, 1, 1, 0, -1, -1];
+            for row in (0..rows).filter(|r| r % num_procs == tid) {
+                let mut data = input.get_row_data(row);
+                let mut pits = vec![];
+                for col in 0..columns {
+                    z = input.get_value(row, col);
+                    if z != nodata {
+                        flag = true;
+                        min_zn = f64::INFINITY;
+                        for n in 0..8 {
+                            zn = input.get_value(row + dy[n], col + dx[n]);
+                            if zn < min_zn {
+                                min_zn = zn;
+                            }
+                            if zn == nodata {
+                                // It's an edge cell.
+                                flag = false;
+                                break;
+                            }
+                            if zn < z {
+                                // There's a lower neighbour
+                                flag = false;
+                                break;
+                            }
+                        }
+                        if flag {
+                            data[col as usize] = min_zn - small_num;
+                            pits.push((row, col, z));
+                        }
+                    }
+                }
+                tx.send((row, data, pits)).unwrap();
+            }
+        });
+    }
+
+    let mut undefined_flow_cells: Vec<(isize, isize, f64)> = vec![];
+    for r in 0..rows {
+        let (row, data, mut pits) = rx.recv().expect("Error receiving data from thread.");
+        output.set_row_data(row, data);
+        undefined_flow_cells.append(&mut pits);
+    }
+    undefined_flow_cells
+}
 
 fn least_cost_search(
     undefined_flow_cells: &mut Vec<(isize, isize, f64)>,
@@ -255,11 +321,6 @@ impl Ord for GridCell {
 
 #[cfg(test)]
 mod tests {
-    use whitebox_raster::DataType;
-
-    use super::super::algorithms::{
-        calculate_flat_increment, get_raw_pits, raise_pits, raster_to_matrix,
-    };
     use super::*;
 
     fn load_raster_from_file() -> Raster {
@@ -278,47 +339,22 @@ mod tests {
         let _ = output.write();
     }
 
-    fn gather_pits() -> Vec<(isize, isize, f64)> {
-        // Load the input raster into memory
-        let raster = load_raster_from_file();
-
-        // Clone the input raster config for use in constructing the output raster later
-        // Set the output datatype to 64-bit float
-        let mut configs = raster.configs.clone();
-        configs.data_type = DataType::F64;
-
-        // Calculate a small increment used to ensure positive flow through breach cells from the raster
-        // metadata
-        let flat_increment = calculate_flat_increment(&configs);
-
-        // Convert the raster into a pathfinding::Matrix
-        let mut matrix = raster_to_matrix(raster, 1).unwrap();
-
-        // Find all the pits and prepare them for beaching by raising their value to just
-        // below the value of their lowest neighbor
-        let raw_pits = get_raw_pits(&matrix);
-        let raised_pits = raise_pits(&mut matrix, raw_pits, flat_increment);
-
-        let mut undefined_flow_cells = vec![];
-        for raised_pit in raised_pits {
-            let data = raised_pit.get_data();
-            undefined_flow_cells.push((data.row, data.column, data.value.into_inner()))
-        }
-        undefined_flow_cells
-    }
-
     #[test]
     fn test_least_cost_search() {
-        let mut undefined_flow_cells = gather_pits();
-        let mut raster = load_raster_from_file();
+        let input = load_raster_from_file();
+        let mut output = input.clone();
+        let num_procs = 8;
         let max_dist = 100;
         let max_cost = f64::INFINITY;
         let flat_increment = 0.000001;
         let minimize_dist = true;
 
+        let mut undefined_flow_cells =
+            raise_pits(Arc::new(input), &mut output, num_procs, flat_increment);
+
         let (num_solved, num_unsolved) = least_cost_search(
             &mut undefined_flow_cells,
-            &mut raster,
+            &mut output,
             max_dist,
             max_cost,
             flat_increment,
@@ -326,10 +362,10 @@ mod tests {
         )
         .unwrap();
 
-        write_raster_to_file(&mut raster);
+        write_raster_to_file(&mut output);
 
         // Original: 15625, 7
-        assert_eq!((num_solved, num_unsolved), (15626, 6));
+        assert_eq!((num_solved, num_unsolved), (15624, 8));
     }
 
     fn get_mock_raster() -> Raster {
