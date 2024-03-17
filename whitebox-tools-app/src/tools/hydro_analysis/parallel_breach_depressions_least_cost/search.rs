@@ -3,7 +3,7 @@ use std::collections::BinaryHeap;
 
 use std::cmp::Ordering::{self, Equal};
 use whitebox_common::structures::Array2D;
-use whitebox_raster::Raster;
+use whitebox_raster::{Raster, RasterConfigs};
 
 fn least_cost_search(
     undefined_flow_cells: &mut Vec<(isize, isize, f64)>,
@@ -22,18 +22,29 @@ fn least_cost_search(
 
     let mut num_solved: usize = 0;
     let mut num_unsolved: usize = 0;
+    let configs = raster.configs.clone();
     while let Some(cell) = undefined_flow_cells.pop() {
-        let outcome = try_breach(cell, raster, max_cost, small_num, minimize_dist, max_dist);
+        let search_array = SearchArray::new(cell, raster, max_dist);
+
+        let outcome = try_breach(
+            search_array,
+            &configs,
+            max_cost,
+            small_num,
+            minimize_dist,
+            max_dist,
+        );
 
         match outcome {
             BreachOutcome::PreviouslyBreached => num_solved += 1,
             BreachOutcome::PathFound(path) => {
+                if path.is_empty() {
+                    println!("cell: {:?}, path is empty", cell);
+                }
                 num_solved += 1;
-                if path.len() > 0 {
-                    for cell in path {
-                        let (r, c, z) = cell;
-                        raster.set_value(r, c, z);
-                    }
+                for cell in path {
+                    let (row, column, value) = cell;
+                    raster.set_value(row, column, value);
                 }
             }
             BreachOutcome::NoPathFound => {
@@ -46,21 +57,21 @@ fn least_cost_search(
 }
 
 fn try_breach(
-    cell: (isize, isize, f64),
-    output: &mut Raster,
+    search_array: SearchArray,
+    configs: &RasterConfigs,
     max_cost: f64,
     small_num: f64,
     minimize_dist: bool,
     max_dist: isize,
 ) -> BreachOutcome {
-    let rows = output.configs.rows as isize;
-    let columns = output.configs.columns as isize;
-    let nodata = output.configs.nodata;
+    let rows = search_array.array.rows as isize;
+    let columns = search_array.array.columns as isize;
+    let nodata = search_array.array.nodata;
 
     let dx = [1, 1, 1, 0, -1, -1, -1, 0];
     let dy = [-1, 0, 1, 1, 1, 0, -1, -1];
-    let resx = output.configs.resolution_x;
-    let resy = output.configs.resolution_y;
+    let resx = configs.resolution_x;
+    let resy = configs.resolution_y;
     let diagres = (resx * resx + resy * resy).sqrt();
     let cost_dist = [diagres, resx, diagres, resy, diagres, resx, diagres, resy];
 
@@ -76,16 +87,12 @@ fn try_breach(
         Array2D::new(rows, columns, 0, -1).expect("Error constructing path_lenght Array2D");
     let mut scanned_cells = vec![];
 
-    // let mut undefined_flow_cells2 = vec![];
-
-    let row = cell.0;
-    let col = cell.1;
-    let z = output.get_value(row, col);
+    let (row, col, z) = search_array.pit;
 
     // Is it still a pit cell? It may have been solved during a previous depression solution.
     let mut flag = true;
     for n in 0..8 {
-        let zn = output.get_value(row + dy[n], col + dx[n]);
+        let zn = search_array.array.get_value(row + dy[n], col + dx[n]);
         if zn < z && zn != nodata {
             // It has a lower non-nodata cell
             // Resolving some other pit cell resulted in a solution for this one.
@@ -113,7 +120,7 @@ fn try_breach(
                 return BreachOutcome::NoPathFound;
             }
             let mut length = path_length.get_value(cell2.row, cell2.column);
-            let mut zn = output.get_value(cell2.row, cell2.column);
+            let mut zn = search_array.array.get_value(cell2.row, cell2.column);
             let cost1 = zn - z + length as f64 * small_num;
             for n in 0..8 {
                 let mut cn = cell2.column + dx[n];
@@ -124,7 +131,7 @@ fn try_breach(
                     let length_n = length + 1;
                     path_length.set_value(rn, cn, length_n);
                     backlink.set_value(rn, cn, backlink_dir[n]);
-                    zn = output.get_value(rn, cn);
+                    zn = search_array.array.get_value(rn, cn);
                     let mut zout = z - (length_n as f64 * small_num);
                     if zn > zout && zn != nodata {
                         let cost2 = zn - zout;
@@ -150,12 +157,15 @@ fn try_breach(
                                 let b = backlink.get_value(rn, cn) as usize;
                                 rn += dy[b];
                                 cn += dx[b];
-                                zn = output.get_value(rn, cn);
+                                zn = search_array.array.get_value(rn, cn);
                                 length = path_length.get_value(rn, cn);
                                 zout = z - (length as f64 * small_num);
                                 if zn > zout {
                                     // output.set_value(rn, cn, zout);
-                                    path.push((rn, cn, zout));
+                                    // path.push((rn, cn, zout));
+                                    let (raster_row, raster_column) =
+                                        search_array.get_raster_index(rn, cn);
+                                    path.push((raster_row, raster_column, zout));
                                 }
                             } else {
                                 flag = false;
@@ -170,10 +180,56 @@ fn try_breach(
     return BreachOutcome::NoPathFound;
 }
 
+#[derive(Debug)]
 enum BreachOutcome {
     PreviouslyBreached,
     NoPathFound,
     PathFound(Vec<(isize, isize, f64)>),
+}
+
+struct SearchArray {
+    pit: (isize, isize, f64),
+    origin: (isize, isize),
+    array: Array2D<f64>,
+}
+
+impl SearchArray {
+    fn new(cell: (isize, isize, f64), raster: &Raster, max_dist: isize) -> Self {
+        let offset = max_dist + 1;
+        let (cell_row, cell_column, cell_value) = cell;
+        let pit = (offset, offset, cell_value);
+
+        let min_row = cell_row - offset;
+        let min_column = cell_column - offset;
+        let origin = (min_row, min_column);
+
+        let mut array = Array2D::new(
+            2 * offset + 1,
+            2 * offset + 1,
+            raster.configs.nodata,
+            raster.configs.nodata,
+        )
+        .unwrap();
+
+        for row in 0..array.rows {
+            for column in 0..array.columns {
+                let value = raster.get_value(row + min_row, column + min_column);
+                array.set_value(row, column, value);
+            }
+        }
+
+        Self { pit, origin, array }
+    }
+
+    fn get_raster_index(self: &Self, row: isize, column: isize) -> (isize, isize) {
+        let (min_row, min_column) = self.origin;
+        (row + min_row, column + min_column)
+    }
+
+    fn get_raster_cell(self: &Self, row: isize, column: isize, value: f64) -> (isize, isize, f64) {
+        let (raster_row, raster_column) = self.get_raster_index(row, column);
+        (raster_row, raster_column, value)
+    }
 }
 
 #[derive(PartialEq, Debug)]
@@ -206,14 +262,14 @@ mod tests {
     };
     use super::*;
 
-    fn load_raster() -> Raster {
+    fn load_raster_from_file() -> Raster {
         const INPUT: &str =
             "/Users/dpower-mac/Downloads/USGS_OPR_MN_GoodhueCounty_2020_A20_6669_deflate.tif";
         let raster = Raster::new(INPUT, "r").unwrap();
         raster
     }
 
-    fn write_raster(raster: &mut Raster) {
+    fn write_raster_to_file(raster: &mut Raster) {
         const OUTPUT: &str = "/Users/dpower-mac/Downloads/test_least_cost_search.tif";
         let mut configs = raster.configs.clone();
         configs.data_type = whitebox_raster::DataType::F64;
@@ -224,7 +280,7 @@ mod tests {
 
     fn gather_pits() -> Vec<(isize, isize, f64)> {
         // Load the input raster into memory
-        let raster = load_raster();
+        let raster = load_raster_from_file();
 
         // Clone the input raster config for use in constructing the output raster later
         // Set the output datatype to 64-bit float
@@ -254,7 +310,7 @@ mod tests {
     #[test]
     fn test_least_cost_search() {
         let mut undefined_flow_cells = gather_pits();
-        let mut raster = load_raster();
+        let mut raster = load_raster_from_file();
         let max_dist = 100;
         let max_cost = f64::INFINITY;
         let flat_increment = 0.000001;
@@ -270,9 +326,105 @@ mod tests {
         )
         .unwrap();
 
-        write_raster(&mut raster);
+        write_raster_to_file(&mut raster);
 
-        assert_eq!(num_solved, 15625);
-        assert_eq!(num_unsolved, 7);
+        // Original: 15625, 7
+        assert_eq!((num_solved, num_unsolved), (15626, 6));
+    }
+
+    fn get_mock_raster() -> Raster {
+        let configs: RasterConfigs = RasterConfigs {
+            rows: 9,
+            columns: 9,
+            nodata: -9999.0,
+            ..Default::default()
+        };
+        let mut raster = Raster::initialize_using_config("test.tif", &configs);
+        raster.set_row_data(0, vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]);
+        raster.set_row_data(1, vec![1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8]);
+        raster.set_row_data(2, vec![2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8]);
+        raster.set_row_data(3, vec![3.0, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8]);
+        raster.set_row_data(4, vec![4.0, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8]);
+        raster.set_row_data(5, vec![5.0, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8]);
+        raster.set_row_data(6, vec![6.0, 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8]);
+        raster.set_row_data(7, vec![7.0, 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7, 7.8]);
+        raster.set_row_data(8, vec![8.0, 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8]);
+
+        raster
+    }
+
+    #[test]
+    fn test_search_array_new_full_size() {
+        let raster = get_mock_raster();
+        let central_cell = (4, 4, raster.get_value(4, 4));
+        let search_array = SearchArray::new(central_cell, &raster, 4);
+
+        let pit = search_array.pit;
+        assert_eq!(pit.0, central_cell.0 + 1);
+        assert_eq!(pit.1, central_cell.1 + 1);
+        assert_eq!(pit.2, central_cell.2);
+        assert_eq!(search_array.array.get_value(pit.0, pit.1), central_cell.2);
+    }
+
+    #[test]
+    fn test_search_array_new_partial_size() {
+        let raster = get_mock_raster();
+        let central_cell = (3, 3, raster.get_value(3, 3));
+        let search_array = SearchArray::new(central_cell, &raster, 1);
+
+        // Define expected Array2D
+        let mut expected =
+            Array2D::new(5, 5, raster.configs.nodata, raster.configs.nodata).unwrap();
+        expected.set_row_data(0, vec![1.1, 1.2, 1.3, 1.4, 1.5]);
+        expected.set_row_data(1, vec![2.1, 2.2, 2.3, 2.4, 2.5]);
+        expected.set_row_data(2, vec![3.1, 3.2, 3.3, 3.4, 3.5]);
+        expected.set_row_data(3, vec![4.1, 4.2, 4.3, 4.4, 4.5]);
+        expected.set_row_data(4, vec![5.1, 5.2, 5.3, 5.4, 5.5]);
+
+        assert_eq!(search_array.array.rows, 5);
+        assert_eq!(search_array.array.columns, 5);
+        for row in 0..5 {
+            for column in 0..5 {
+                assert_eq!(
+                    search_array.array.get_value(row, column),
+                    expected.get_value(row, column)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_raster_cell() {
+        let raster = get_mock_raster();
+        let central_cell = (3, 3, raster.get_value(3, 3));
+        let search_array = SearchArray::new(central_cell, &raster, 2);
+
+        for row in 0..search_array.array.rows as isize {
+            for column in 0..search_array.array.columns as isize {
+                let from_array = search_array.get_raster_cell(
+                    row,
+                    column,
+                    search_array.array.get_value(row, column),
+                );
+                let raster_value = raster.get_value(from_array.0, from_array.1);
+                assert_eq!(from_array.2, raster_value);
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_raster_index() {
+        let raster = get_mock_raster();
+        let central_cell = (3, 3, raster.get_value(3, 3));
+        let search_array = SearchArray::new(central_cell, &raster, 2);
+
+        for row in 0..search_array.array.rows as isize {
+            for column in 0..search_array.array.columns as isize {
+                let (raster_row, raster_col) = search_array.get_raster_index(row, column);
+                let raster_value = raster.get_value(raster_row, raster_col);
+                let array_value = search_array.array.get_value(row, column);
+                assert_eq!(array_value, raster_value);
+            }
+        }
     }
 }
