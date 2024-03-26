@@ -409,6 +409,7 @@ impl WhiteboxTool for BreachDepressionsLeastCostParallel {
             max_cost,
             flat_increment,
             minimize_dist,
+            num_procs as usize,
         );
 
         let num_unsolved = undefined_flow_cells2.len() as isize;

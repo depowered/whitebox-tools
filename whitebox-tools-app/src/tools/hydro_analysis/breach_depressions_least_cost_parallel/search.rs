@@ -1,11 +1,12 @@
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashSet};
 
 use std::cmp::Ordering;
 use std::cmp::Ordering::Equal;
 use std::sync::{mpsc, Arc};
 use std::thread;
+use threadpool::ThreadPool;
 use whitebox_common::structures::Array2D;
-use whitebox_raster::{Raster, RasterConfigs};
+use whitebox_raster::Raster;
 
 pub fn raise_pits(
     input: &Arc<Raster>,
@@ -77,50 +78,129 @@ pub fn least_cost_search(
     max_cost: f64,
     flat_increment: f64,
     minimize_dist: bool,
+    num_threads: usize,
 ) -> Vec<(isize, isize, f64)> {
     let small_num = flat_increment;
+    let configs = raster.configs.clone();
 
     /* Vec is a stack and so if we want to pop the values from lowest to highest, we need to sort
     them from highest to lowest. */
     undefined_flow_cells.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(Equal));
     let mut unsolved_pits = vec![];
 
-    let configs = raster.configs.clone();
+    // Initialize structures used for tracking breach progress and results
+    let mut in_progress: HashSet<(isize, isize)> = HashSet::new();
 
-    while let Some(cell) = undefined_flow_cells.pop() {
-        let search_array = SearchArray::new(cell, raster, max_dist);
+    // Attempt to breach each pit using the main thread to prepare search matrices and apply breach
+    // paths with worker threads responsible for preforming the breach path searches
+    let (sender, receiver) = mpsc::channel::<((isize, isize, f64), BreachOutcome)>();
+    let num_workers = num_threads - 1;
+    println!("Spawning {} worker threads", num_workers);
+    let pool = ThreadPool::new(num_workers);
 
-        let outcome = try_breach(
-            search_array,
-            &configs,
-            max_cost,
-            small_num,
-            minimize_dist,
-            max_dist,
-        );
+    while !undefined_flow_cells.is_empty() || !in_progress.is_empty() {
+        // Only prepare and dispatch a search operation if the queue is empty to limit memory
+        // consumption
+        if pool.queued_count() < 1 {
+            // Prepare the next pit for breach path search if one is available
+            if let Some(cell) =
+                get_next_available_pit(undefined_flow_cells, &mut in_progress, max_dist)
+            {
+                let search_array = SearchArray::new(cell, raster, max_dist);
 
-        match outcome {
-            BreachOutcome::PreviouslyBreached => {}
-            BreachOutcome::PathFound(path) => {
-                if path.is_empty() {
-                    println!("cell: {:?}, path is empty", cell);
-                }
-                for cell in path {
-                    let (row, column, value) = cell;
-                    raster.set_value(row, column, value);
-                }
+                // Dispatch the search operation to a worker thread
+                let sender = sender.clone();
+                pool.execute(move || {
+                    let outcome = try_breach(
+                        search_array,
+                        configs.resolution_x,
+                        configs.resolution_y,
+                        max_cost,
+                        small_num,
+                        minimize_dist,
+                        max_dist,
+                    );
+                    sender
+                        .send((cell, outcome))
+                        .expect("An error occurred while sending data to the main thread.");
+                });
             }
-            BreachOutcome::NoPathFound => {
-                unsolved_pits.push(cell); // Add it to the list for the next iteration
+        }
+
+        // Check for any completed search operations, handling them accordingly
+        // Otherwise, continue to the top of the loop and prepare another search operation
+        match receiver.try_recv() {
+            Ok((cell, outcome)) => {
+                match outcome {
+                    BreachOutcome::PreviouslyBreached => {}
+                    BreachOutcome::PathFound(path) => {
+                        if path.is_empty() {
+                            println!("cell: {:?}, path is empty", cell);
+                        }
+                        for cell in path {
+                            let (row, column, value) = cell;
+                            raster.set_value(row, column, value);
+                        }
+                    }
+                    BreachOutcome::NoPathFound => {
+                        unsolved_pits.push(cell); // Add it to the list for the next iteration
+                    }
+                }
+                in_progress.remove(&(cell.0, cell.1));
             }
+            Err(_) => continue,
         }
     }
     unsolved_pits
 }
 
+fn distance_between(x1: isize, y1: isize, x2: isize, y2: isize) -> f64 {
+    let dx = x2 - x1;
+    let dy = y1 - y2;
+    let square_dist = (dx * dx + dy * dy) as f64;
+    square_dist.sqrt()
+}
+
+fn get_next_available_pit(
+    undefined_flow_cells: &mut Vec<(isize, isize, f64)>,
+    in_progress: &mut HashSet<(isize, isize)>,
+    max_dist: isize,
+) -> Option<(isize, isize, f64)> {
+    // No more pits to solve
+    if undefined_flow_cells.is_empty() {
+        return None;
+    }
+
+    // If no pits are in progress, return the lowest value pit without preforming distance checks
+    if in_progress.is_empty() {
+        let pit = undefined_flow_cells.pop()?;
+        in_progress.insert((pit.0, pit.1));
+        return Some(pit);
+    }
+
+    // Find the lowest value pit that is at least two times the max distance from any
+    // pit currently in progress
+    let diagonal_max_dist = (max_dist as f64).powi(2).sqrt();
+    let min_dist_between = 2.0 * diagonal_max_dist;
+    for (i, pit) in undefined_flow_cells.iter().enumerate().rev() {
+        // let pit_data = pit.get_data();
+        for in_progress_pit in in_progress.iter() {
+            let dist_between = distance_between(pit.0, pit.1, in_progress_pit.0, in_progress_pit.1);
+            if dist_between < min_dist_between {
+                continue;
+            }
+        }
+        let pit = undefined_flow_cells.remove(i);
+        in_progress.insert((pit.0, pit.1));
+        return Some(pit);
+    }
+    return None;
+}
+
 fn try_breach(
     search_array: SearchArray,
-    configs: &RasterConfigs,
+    resx: f64,
+    resy: f64,
     max_cost: f64,
     small_num: f64,
     minimize_dist: bool,
@@ -132,8 +212,6 @@ fn try_breach(
 
     let dx = [1, 1, 1, 0, -1, -1, -1, 0];
     let dy = [-1, 0, 1, 1, 1, 0, -1, -1];
-    let resx = configs.resolution_x;
-    let resy = configs.resolution_y;
     let diagres = (resx * resx + resy * resy).sqrt();
     let cost_dist = [diagres, resx, diagres, resy, diagres, resx, diagres, resy];
 
@@ -318,6 +396,7 @@ impl Ord for GridCell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use whitebox_raster::RasterConfigs;
 
     fn load_raster_from_file() -> Raster {
         const INPUT: &str =
@@ -344,6 +423,7 @@ mod tests {
         let max_cost = f64::INFINITY;
         let flat_increment = 0.000001;
         let minimize_dist = true;
+        let num_threads = 4;
 
         let mut undefined_flow_cells =
             raise_pits(&Arc::new(input), &mut output, num_procs, flat_increment);
@@ -356,6 +436,7 @@ mod tests {
             max_cost,
             flat_increment,
             minimize_dist,
+            num_threads,
         );
 
         write_raster_to_file(&mut output);
