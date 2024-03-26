@@ -1,4 +1,3 @@
-use anyhow::Result;
 use std::collections::BinaryHeap;
 
 use std::cmp::Ordering;
@@ -8,8 +7,8 @@ use std::thread;
 use whitebox_common::structures::Array2D;
 use whitebox_raster::{Raster, RasterConfigs};
 
-fn raise_pits(
-    input: Arc<Raster>,
+pub fn raise_pits(
+    input: &Arc<Raster>,
     output: &mut Raster,
     num_procs: isize,
     small_num: f64,
@@ -71,24 +70,23 @@ fn raise_pits(
     undefined_flow_cells
 }
 
-fn least_cost_search(
+pub fn least_cost_search(
     undefined_flow_cells: &mut Vec<(isize, isize, f64)>,
     raster: &mut Raster,
     max_dist: isize,
     max_cost: f64,
     flat_increment: f64,
     minimize_dist: bool,
-) -> Result<(usize, usize)> {
+) -> Vec<(isize, isize, f64)> {
     let small_num = flat_increment;
 
     /* Vec is a stack and so if we want to pop the values from lowest to highest, we need to sort
     them from highest to lowest. */
     undefined_flow_cells.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(Equal));
-    let mut undefined_flow_cells2 = vec![];
+    let mut unsolved_pits = vec![];
 
-    let mut num_solved: usize = 0;
-    let mut num_unsolved: usize = 0;
     let configs = raster.configs.clone();
+
     while let Some(cell) = undefined_flow_cells.pop() {
         let search_array = SearchArray::new(cell, raster, max_dist);
 
@@ -102,24 +100,22 @@ fn least_cost_search(
         );
 
         match outcome {
-            BreachOutcome::PreviouslyBreached => num_solved += 1,
+            BreachOutcome::PreviouslyBreached => {}
             BreachOutcome::PathFound(path) => {
                 if path.is_empty() {
                     println!("cell: {:?}, path is empty", cell);
                 }
-                num_solved += 1;
                 for cell in path {
                     let (row, column, value) = cell;
                     raster.set_value(row, column, value);
                 }
             }
             BreachOutcome::NoPathFound => {
-                undefined_flow_cells2.push(cell); // Add it to the list for the next iteration
-                num_unsolved += 1;
+                unsolved_pits.push(cell); // Add it to the list for the next iteration
             }
         }
     }
-    Ok((num_solved, num_unsolved))
+    unsolved_pits
 }
 
 fn try_breach(
@@ -350,20 +346,22 @@ mod tests {
         let minimize_dist = true;
 
         let mut undefined_flow_cells =
-            raise_pits(Arc::new(input), &mut output, num_procs, flat_increment);
+            raise_pits(&Arc::new(input), &mut output, num_procs, flat_increment);
+        let num_pits = undefined_flow_cells.len() as isize;
 
-        let (num_solved, num_unsolved) = least_cost_search(
+        let undefined_flow_cells2 = least_cost_search(
             &mut undefined_flow_cells,
             &mut output,
             max_dist,
             max_cost,
             flat_increment,
             minimize_dist,
-        )
-        .unwrap();
+        );
 
         write_raster_to_file(&mut output);
 
+        let num_unsolved = undefined_flow_cells2.len() as isize;
+        let num_solved = num_pits - num_unsolved;
         // Original: 15625, 7
         assert_eq!((num_solved, num_unsolved), (15624, 8));
     }
