@@ -5,8 +5,10 @@ Created: 01/11/2019
 Last Modified: 24/11/2019
 License: MIT
 */
+mod search;
 
 use crate::tools::*;
+use search::{least_cost_search, raise_pits};
 use std::cmp::Ordering;
 use std::cmp::Ordering::Equal;
 use std::collections::{BinaryHeap, VecDeque};
@@ -20,7 +22,6 @@ use std::sync::Arc;
 use std::thread;
 use whitebox_common::structures::Array2D;
 use whitebox_raster::*;
-mod search;
 
 /// This tool can be used to perform a type of optimal depression breaching to prepare a
 /// digital elevation model (DEM) for hydrological analysis. Depression breaching is a common
@@ -398,209 +399,21 @@ impl WhiteboxTool for BreachDepressionsLeastCostParallel {
         let display_min = input.configs.display_min;
         let display_max = input.configs.display_max;
 
-        // Raise pit cells to minimize the depth of breach channels.
-        let (tx, rx) = mpsc::channel();
-        for tid in 0..num_procs {
-            let input = input.clone();
-            let tx = tx.clone();
-            thread::spawn(move || {
-                let (mut z, mut zn, mut min_zn): (f64, f64, f64);
-                let mut flag: bool;
-                let dx = [1, 1, 1, 0, -1, -1, -1, 0];
-                let dy = [-1, 0, 1, 1, 1, 0, -1, -1];
-                for row in (0..rows).filter(|r| r % num_procs == tid) {
-                    let mut data = input.get_row_data(row);
-                    let mut pits = vec![];
-                    for col in 0..columns {
-                        z = input.get_value(row, col);
-                        if z != nodata {
-                            flag = true;
-                            min_zn = f64::INFINITY;
-                            for n in 0..8 {
-                                zn = input.get_value(row + dy[n], col + dx[n]);
-                                if zn < min_zn {
-                                    min_zn = zn;
-                                }
-                                if zn == nodata {
-                                    // It's an edge cell.
-                                    flag = false;
-                                    break;
-                                }
-                                if zn < z {
-                                    // There's a lower neighbour
-                                    flag = false;
-                                    break;
-                                }
-                            }
-                            if flag {
-                                data[col as usize] = min_zn - small_num;
-                                pits.push((row, col, z));
-                            }
-                        }
-                    }
-                    tx.send((row, data, pits)).unwrap();
-                }
-            });
-        }
+        let mut undefined_flow_cells = raise_pits(&input, &mut output, num_procs, small_num);
+        let num_pits = undefined_flow_cells.len() as isize;
 
-        let mut undefined_flow_cells: Vec<(isize, isize, f64)> = vec![];
-        let mut undefined_flow_cells2 = vec![];
-        for r in 0..rows {
-            let (row, data, mut pits) = rx.recv().expect("Error receiving data from thread.");
-            output.set_row_data(row, data);
-            undefined_flow_cells.append(&mut pits);
+        let undefined_flow_cells2 = least_cost_search(
+            &mut undefined_flow_cells,
+            &mut output,
+            max_dist,
+            max_cost,
+            flat_increment,
+            minimize_dist,
+        );
 
-            if verbose {
-                progress = (100.0_f64 * r as f64 / (rows - 1) as f64) as usize;
-                if progress != old_progress {
-                    println!("Finding pits: {}%", progress);
-                    old_progress = progress;
-                }
-            }
-        }
+        let num_unsolved = undefined_flow_cells2.len() as isize;
+        let num_solved = num_pits - num_unsolved;
 
-        ////////////////////////////////////////////////////////////////////////////////////////////
-        // We need to visit and (potentially) solve each undefined-flow cell in order from lowest //
-        // to highest. This is because some higher pits can be solved, or partially solved using  //
-        // the breach paths of lower pits.                                                        //
-        ////////////////////////////////////////////////////////////////////////////////////////////
-
-        /* Vec is a stack and so if we want to pop the values from lowest to highest, we need to sort
-        them from highest to lowest. */
-        undefined_flow_cells.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(Equal));
-        let num_deps = undefined_flow_cells.len();
-        if num_deps == 0 && verbose {
-            println!("No depressions found. Process ending...");
-        }
-
-        num_solved = 0;
-        let backlink_dir = [4i8, 5, 6, 7, 0, 1, 2, 3];
-        let mut backlink: Array2D<i8> = Array2D::new(rows, columns, -1, -2)?;
-        let mut encountered: Array2D<i8> = Array2D::new(rows, columns, 0, -1)?;
-        let mut path_length: Array2D<i16> = Array2D::new(rows, columns, 0, -1)?;
-        let mut scanned_cells = vec![];
-        let max_length = max_dist as i16;
-        let filter_size = ((max_dist * 2 + 1) * (max_dist * 2 + 1)) as usize;
-        let mut minheap = BinaryHeap::with_capacity(filter_size);
-        while let Some(cell) = undefined_flow_cells.pop() {
-            row = cell.0;
-            col = cell.1;
-            z = output.get_value(row, col);
-
-            // Is it still a pit cell? It may have been solved during a previous depression solution.
-            flag = true;
-            for n in 0..8 {
-                zn = output.get_value(row + dy[n], col + dx[n]);
-                if zn < z && zn != nodata {
-                    // It has a lower non-nodata cell
-                    // Resolving some other pit cell resulted in a solution for this one.
-                    num_solved += 1;
-                    flag = false;
-                    break;
-                }
-            }
-            if flag {
-                // Perform the cost-accumulation operation.
-                encountered.set_value(row, col, 1i8);
-                if !minheap.is_empty() {
-                    minheap.clear();
-                }
-                minheap.push(GridCell {
-                    row: row,
-                    column: col,
-                    priority: 0f64,
-                });
-                scanned_cells.push((row, col));
-                flag = true;
-                while !minheap.is_empty() && flag {
-                    let cell2 = minheap.pop().expect("Error during pop operation.");
-                    accum = cell2.priority;
-                    if accum > max_cost {
-                        // There isn't a breach channel cheap enough
-                        undefined_flow_cells2.push((row, col, z)); // Add it to the list for the filling step
-                        num_unsolved += 1;
-                        flag = false;
-                        break;
-                    }
-                    length = path_length.get_value(cell2.row, cell2.column);
-                    zn = output.get_value(cell2.row, cell2.column);
-                    cost1 = zn - z + length as f64 * small_num;
-                    for n in 0..8 {
-                        cn = cell2.column + dx[n];
-                        rn = cell2.row + dy[n];
-                        if encountered.get_value(rn, cn) != 1i8 {
-                            scanned_cells.push((rn, cn));
-                            // not yet encountered
-                            length_n = length + 1;
-                            path_length.set_value(rn, cn, length_n);
-                            backlink.set_value(rn, cn, backlink_dir[n]);
-                            zn = output.get_value(rn, cn);
-                            zout = z - (length_n as f64 * small_num);
-                            if zn > zout && zn != nodata {
-                                cost2 = zn - zout;
-                                new_cost = if minimize_dist {
-                                    accum + (cost1 + cost2) / 2f64 * cost_dist[n]
-                                } else {
-                                    accum + cost2
-                                };
-                                encountered.set_value(rn, cn, 1i8);
-                                if length_n <= max_length {
-                                    minheap.push(GridCell {
-                                        row: rn,
-                                        column: cn,
-                                        priority: new_cost,
-                                    });
-                                }
-                            } else if zn <= zout || zn == nodata {
-                                // We're at a cell that we can breach to
-                                while flag {
-                                    // Find which cell to go to from here
-                                    if backlink.get_value(rn, cn) > -1i8 {
-                                        b = backlink.get_value(rn, cn) as usize;
-                                        rn += dy[b];
-                                        cn += dx[b];
-                                        zn = output.get_value(rn, cn);
-                                        length = path_length.get_value(rn, cn);
-                                        zout = z - (length as f64 * small_num);
-                                        if zn > zout {
-                                            output.set_value(rn, cn, zout);
-                                        }
-                                    } else {
-                                        flag = false;
-                                    }
-                                }
-                                num_solved += 1;
-                                flag = false;
-                                break; // don't check any more neighbours.
-                            }
-                        }
-                    }
-                }
-
-                // clear the intermediate rasters
-                while let Some(cell2) = scanned_cells.pop() {
-                    backlink.set_value(cell2.0, cell2.1, -1i8);
-                    encountered.set_value(cell2.0, cell2.1, 0i8);
-                    path_length.set_value(cell2.0, cell2.1, 0i16);
-                }
-
-                if flag {
-                    // Didn't find any lower cells.
-                    undefined_flow_cells2.push((row, col, z)); // Add it to the list for the next iteration
-                    num_unsolved += 1;
-                }
-            }
-
-            if verbose {
-                progress = (100.0_f64
-                    * (1f64 - (undefined_flow_cells.len()) as f64 / (num_deps - 1) as f64))
-                    as usize;
-                if progress != old_progress {
-                    println!("Breaching: {}%", progress);
-                    old_progress = progress;
-                }
-            }
-        }
         if verbose {
             println!("Num. solved pits: {}", num_solved);
             println!("Num. unsolved pits: {}", num_unsolved);
