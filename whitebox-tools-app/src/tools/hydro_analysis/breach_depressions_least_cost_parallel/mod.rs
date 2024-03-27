@@ -240,6 +240,7 @@ impl WhiteboxTool for BreachDepressionsLeastCostParallel {
         working_directory: &'a str,
         verbose: bool,
     ) -> Result<(), Error> {
+        println!("Args: {:?}", args);
         let mut input_file = String::new();
         let mut output_file = String::new();
         let mut max_cost = f64::INFINITY;
