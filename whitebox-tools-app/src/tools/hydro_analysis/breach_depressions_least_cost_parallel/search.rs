@@ -52,8 +52,9 @@ pub fn raise_pits(
                             }
                         }
                         if flag {
-                            data[col as usize] = min_zn - small_num;
-                            pits.push((row, col, z));
+                            let raised_z = min_zn - small_num;
+                            data[col as usize] = raised_z;
+                            pits.push((row, col, raised_z));
                         }
                     }
                 }
@@ -139,7 +140,10 @@ pub fn least_cost_search(
                         }
                         for cell in path {
                             let (row, column, value) = cell;
-                            raster.set_value(row, column, value);
+                            let current_value = raster.get_value(row, column);
+                            if value < current_value {
+                                raster.set_value(row, column, value);
+                            }
                         }
                     }
                     BreachOutcome::NoPathFound => {
@@ -300,13 +304,9 @@ fn try_breach(
                                 zn = search_array.array.get_value(rn, cn);
                                 length = path_length.get_value(rn, cn);
                                 zout = z - (length as f64 * small_num);
-                                if zn > zout {
-                                    // output.set_value(rn, cn, zout);
-                                    // path.push((rn, cn, zout));
-                                    let (raster_row, raster_column) =
-                                        search_array.get_raster_index(rn, cn);
-                                    path.push((raster_row, raster_column, zout));
-                                }
+                                let (raster_row, raster_column) =
+                                    search_array.get_raster_index(rn, cn);
+                                path.push((raster_row, raster_column, zout));
                             } else {
                                 flag = false;
                             }
@@ -447,7 +447,42 @@ mod tests {
         let num_unsolved = undefined_flow_cells2.len() as isize;
         let num_solved = num_pits - num_unsolved;
         // Original: 15625, 7
-        assert_eq!((num_solved, num_unsolved), (15624, 8));
+        assert_eq!((num_solved, num_unsolved), (15625, 7));
+    }
+
+    #[test]
+    fn test_pit_solved_count() {
+        let input = load_raster_from_file();
+        let mut output = input.clone();
+        let num_procs = 8;
+        let max_dist = 100;
+        let max_cost = f64::INFINITY;
+        let flat_increment = 0.000001;
+        let minimize_dist = true;
+        let num_threads = 4;
+
+        let mut undefined_flow_cells =
+            raise_pits(&Arc::new(input), &mut output, num_procs, flat_increment);
+
+        let unsolved_pits = least_cost_search(
+            &mut undefined_flow_cells,
+            &mut output,
+            max_dist,
+            max_cost,
+            flat_increment,
+            minimize_dist,
+            num_threads,
+        );
+
+        let reported_num_unsolved = unsolved_pits.len() as isize;
+
+        let input = output.clone();
+        let undefined_flow_cells2 =
+            raise_pits(&Arc::new(input), &mut output, num_procs, flat_increment);
+
+        let remaining_num_unsolved = undefined_flow_cells2.len() as isize;
+
+        assert_eq!((remaining_num_unsolved, reported_num_unsolved), (7, 7));
     }
 
     fn get_mock_raster() -> Raster {
