@@ -602,6 +602,7 @@ impl WhiteboxTool for BreachDepressionsLeastCost {
             }
         }
         if verbose {
+            println!("Num. pits identified: {}", num_deps);
             println!("Num. solved pits: {}", num_solved);
             println!("Num. unsolved pits: {}", num_unsolved);
         }

@@ -402,6 +402,9 @@ impl WhiteboxTool for BreachDepressionsLeastCostParallel {
 
         let mut undefined_flow_cells = raise_pits(&input, &mut output, num_procs, small_num);
         let num_pits = undefined_flow_cells.len() as isize;
+        if verbose {
+            println!("Num. pits identified: {}", num_pits);
+        }
 
         let undefined_flow_cells2 = least_cost_search(
             &mut undefined_flow_cells,
