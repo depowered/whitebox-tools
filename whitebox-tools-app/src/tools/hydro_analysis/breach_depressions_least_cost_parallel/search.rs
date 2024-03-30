@@ -316,6 +316,9 @@ fn try_breach(
                 }
             }
         }
+        if flag {
+            return BreachOutcome::NoPathFound;
+        }
     }
     return BreachOutcome::NoPathFound;
 }
